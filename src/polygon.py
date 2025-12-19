@@ -1,30 +1,31 @@
 import pygame
-from typing import List
+import numpy as np
+import random
 
-from .types import Vec3
 from .camera import Camera
 
 
 class Polygon:
-    def __init__(self, vecs: List[Vec3]):
-        self.vecs = vecs
+    def __init__(self, entity, indexes):
+        self.entity = entity
+        self.indexes = indexes
+        self.color = (random.randint(0, 100), random.randint(0, 100), random.randint(0, 100))
 
-    def is_visible(self, points: List[tuple], camera: Camera):
-        for point in points:
-            if camera.left <= point[0] <= camera.right and \
-                    camera.bottom <= point[1] <= camera.top:
-                return True
-        return False
+    def is_visible(self, points: np.ndarray, camera: Camera):
+        x, y = points[:, 0], points[:, 1]
+    
+        inside = (x >= camera.left) & (x <= camera.right) & (y >= camera.bottom) & (y <= camera.top)
+        return np.any(inside)
 
     def get_points(self, camera: Camera):
-        points = []
-        for vec in self.vecs:
-            points.append(
-                camera.world_to_cam(vec)
-            )
+        points = camera.world_to_cam(self.entity.camera_points[self.indexes])
         return self.is_visible(points, camera), points
 
+    @property
+    def world_z(self):
+        return self.entity.vertices[self.indexes][:, 2].max()
+
     def draw(self, camera: Camera):
-        visible, points = self.get_points(camera)
-        if visible:
-            pygame.draw.polygon(camera, (255, 0, 0), points)
+        # if self.is_visible(self.entity.camera_points[self.indexes], camera):
+        if np.all(self.entity.valid_points[self.indexes]):
+            pygame.draw.polygon(camera, self.color, self.entity.camera_points[self.indexes])

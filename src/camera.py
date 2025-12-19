@@ -1,19 +1,18 @@
-import pygame
 import math
-
-from src.types import Vec3
+import numpy as np
+import pygame
 
 
 class Camera(pygame.Surface):
-    def __init__(self, size, position: Vec3 = Vec3.zero(), angle: float = 0, spread: float = math.pi / 6):
+    def __init__(self, size, position: tuple = (0, 0, 0), angle: float = 0, spread: float = math.pi / 6):
         super().__init__(size)
-        self.position = position # Does not have any effect yet
+        self.position = np.array([*position])
         self.angle = angle # Does not have any effect yet
         self.spread = spread
 
     @property
     def left(self):
-        return self.position.x
+        return self.position[0]
 
     @property
     def right(self):
@@ -21,18 +20,25 @@ class Camera(pygame.Surface):
 
     @property
     def bottom(self):
-        return self.position.y
+        return self.position[0]
 
     @property
     def top(self):
         return self.bottom + self.get_height()
 
-    def world_to_cam(self, vec: Vec3):
-        diff = vec.z * math.tan(self.spread)
+    def world_to_cam(self, points):
+        depth = points[:, 2] - self.position[2]
+        near = 1e-6
+
+        valid = depth > near
+
+        diff = depth * math.tan(self.spread)
         h = self.get_height() + 2 * diff
         w = self.get_width() + 2 * diff
-        pos = (
-            (vec.x - self.left + diff) / w * self.get_width(),
-            (vec.y - self.bottom + diff) / h * self.get_height(),
-        )
-        return pos
+
+        screen = np.column_stack((
+            (points[:, 0] - self.left + diff) / w * self.get_width(),
+            (points[:, 1] - self.bottom + diff) / h * self.get_height()
+        ))
+
+        return screen, valid
