@@ -1,0 +1,108 @@
+"""
+Example: Basic usage of Engine3D
+Demonstrates loading objects, camera control, and input handling.
+"""
+import sys
+sys.path.insert(0, '..')
+
+from src.engine3d import Window3D, Object3D, Keys, Color
+
+
+class BasicExample(Window3D):
+    """Simple example with a rotating object."""
+    
+    def setup(self):
+        """Called once at startup."""
+        # Load a 3D object
+        self.stairs = self.load_object(
+            "example/stairs_modular_right.obj",
+            position=(0, 0, 0),
+            scale=1.0,
+            color=Color.ORANGE
+        )
+        
+        # Set up camera
+        self.camera.position = (0, 5, 15)
+        self.camera.look_at((0, 0, 0))
+        
+        # Set up light
+        self.light.direction = (0.5, -1, -0.5)
+        self.light.ambient = 0.3
+        
+        # Rotation speed
+        self.rotation_speed = 30  # degrees per second
+        
+        # Movement speed for entity
+        self.entity_move_speed = 10.0  # units per second
+    
+    def on_update(self, delta_time):
+        """Called every frame."""
+        # Rotate the object
+        self.stairs.rotation_y += self.rotation_speed * delta_time
+        
+        # Entity movement with arrow keys
+        move_speed = self.entity_move_speed * delta_time
+        
+        # Left/Right arrows: move horizontally (X-axis)
+        if self.is_key_pressed(Keys.LEFT):
+            self.stairs.x -= move_speed
+        if self.is_key_pressed(Keys.RIGHT):
+            self.stairs.x += move_speed
+        
+        # Up/Down arrows: move in Z-axis
+        if self.is_key_pressed(Keys.UP):
+            self.stairs.z -= move_speed
+        if self.is_key_pressed(Keys.DOWN):
+            self.stairs.z += move_speed
+        
+        # Camera orbit with A/D keys
+        if self.is_key_pressed(Keys.A):
+            self.camera.orbit(-delta_time, 0)
+        if self.is_key_pressed(Keys.D):
+            self.camera.orbit(delta_time, 0)
+        
+        # Camera zoom with W/S keys
+        if self.is_key_pressed(Keys.W):
+            self.camera.zoom(-move_speed)
+        if self.is_key_pressed(Keys.S):
+            self.camera.zoom(move_speed)
+        
+        # Update window title with position info
+        pos = self.stairs.position
+        self.set_caption(
+            f"Engine3D - Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) - {self.fps:.0f} FPS"
+        )
+    
+    def on_key_press(self, key, modifiers):
+        """Called when a key is pressed."""
+        if key == Keys.ESCAPE:
+            self.close()
+        elif key == Keys.SPACE:
+            # Toggle rotation direction
+            self.rotation_speed = -self.rotation_speed
+        elif key == Keys.R:
+            # Reset object position and camera
+            self.stairs.position = (0, 0, 0)
+            self.camera.position = (0, 5, 15)
+            self.camera.look_at((0, 0, 0))
+    
+    def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
+        """Called when mouse wheel is scrolled."""
+        # Zoom in/out
+        self.camera.zoom(-scroll_y * 2)
+
+
+if __name__ == "__main__":
+    print("=== Engine3D Basic Example ===")
+    print("Controls:")
+    print("  Arrow Keys - Move object (Left/Right = X, Up/Down = Z)")
+    print("  A/D - Orbit camera")
+    print("  W/S - Zoom camera")
+    print("  SPACE - Toggle rotation direction")
+    print("  R - Reset position")
+    print("  ESC - Exit")
+    print()
+    
+    # Create and run the application
+    game = BasicExample(800, 600, "Engine3D - Basic Example")
+    game.run()

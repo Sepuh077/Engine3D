@@ -6,9 +6,12 @@ from .camera import Camera
 
 
 class Polygon:
+    # OPTIMIZATION: __slots__ for faster attribute access and less memory
+    __slots__ = ['entity', 'indexes', 'color']
+    
     def __init__(self, entity, indexes):
         self.entity = entity
-        self.indexes = indexes
+        self.indexes = np.array(indexes, dtype=np.int32)  # OPTIMIZATION: numpy array for faster indexing
         self.color = (random.randint(0, 100), random.randint(0, 100), random.randint(0, 100))
 
     def is_visible(self, points: np.ndarray, camera: Camera):

@@ -1,0 +1,42 @@
+"""
+Engine3D - A simple, GPU-accelerated 3D engine for Python.
+
+Similar to arcade's API, but for 3D graphics.
+
+Example:
+    from src.engine3d import Window3D, Object3D
+    
+    class MyGame(Window3D):
+        def setup(self):
+            self.player = self.load_object("player.obj")
+            self.player.position = (0, 0, 0)
+        
+        def on_update(self, delta_time):
+            self.player.rotation_y += delta_time
+        
+        def on_key_press(self, key, modifiers):
+            if key == Keys.ESCAPE:
+                self.close()
+    
+    MyGame(800, 600, "My Game").run()
+"""
+
+from .window import Window3D
+from .view import View3D
+from .object3d import Object3D
+from .camera import Camera3D
+from .light import Light3D
+from .keys import Keys
+from .color import Color
+
+__all__ = [
+    'Window3D',
+    'View3D', 
+    'Object3D',
+    'Camera3D',
+    'Light3D',
+    'Keys',
+    'Color',
+]
+
+__version__ = '0.1.0'
