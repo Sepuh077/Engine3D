@@ -4,7 +4,11 @@ Demonstrates rendering 100+ objects at 60 FPS.
 Tests position update speed by moving ALL objects with arrow keys.
 """
 import sys
-sys.path.insert(0, '..')
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.engine3d import Window3D, Keys, Color
 
@@ -14,7 +18,7 @@ class ManyObjectsExample(Window3D):
     
     def setup(self):
         """Create a grid of objects."""
-        self.num_objects = 2000
+        self.num_objects = 500
         grid_size = 25
         spacing = 4.0
         

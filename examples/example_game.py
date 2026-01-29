@@ -4,11 +4,11 @@ Demonstrates FPS-style camera movement with mouse look.
 """
 import sys
 from pathlib import Path
+import math
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import math
 
 from src.engine3d import Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane
