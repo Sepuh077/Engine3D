@@ -6,6 +6,7 @@ import numpy as np
 from typing import Tuple, Optional, List, TYPE_CHECKING
 
 from src.physics import ColliderType
+from src.physics.collider import Collider
 from .color import ColorType, Color
 
 if TYPE_CHECKING:
@@ -29,13 +30,12 @@ class Object3D:
 
         self._transform_dirty = True
 
-        # Cached transforms / colliders
+        # Cached transforms
         self._cached_rotation = None
         self._cached_model = None
-        self._cached_aabb = None
-        self._cached_obb = None
-        self._cached_sphere = None
-        self._cached_cylinder = None
+        
+        # Collider
+        self.collider = Collider(collider_type)
 
         # ---------------- Geometry ----------------
         self._vertices = None
@@ -49,9 +49,10 @@ class Object3D:
         # ---------------- Misc ----------------
         self._color = np.array(color if color else (1, 1, 1), dtype=np.float32)
         self._visible = True
-        self._collider_type = collider_type
         self._static = False
         self.draw_bounding_box = False
+        self.name = "Object3D"
+        self.tag = None
 
         # GPU handles (initialized later)
         self._vbo = None
@@ -259,11 +260,11 @@ class Object3D:
     @property
     def collider_type(self) -> str:
         """Type of collider: cube (OBB), sphere or cylinder."""
-        return self._collider_type
+        return self.collider.type
 
     @collider_type.setter
     def collider_type(self, value: ColliderType):
-        self._collider_type = value
+        self.collider.type = value
     
     # =========================================================================
     # Appearance properties
@@ -392,16 +393,16 @@ class Object3D:
         center = self._position + center_offset
 
         # ----- OBB -----
-        self._cached_obb = (center, R, extents)
+        obb = (center, R, extents)
 
         # ----- Sphere -----
         radius = self._local_radius * np.max(np.abs(self._scale))
-        self._cached_sphere = (center, float(radius))
+        sphere = (center, float(radius))
 
         # ----- AABB from OBB (fast way) -----
         absR = np.abs(R)
         half = absR @ extents
-        self._cached_aabb = (center - half, center + half)
+        aabb = (center - half, center + half)
 
         # ----- Cylinder -----
         half_ext = (self._local_max - self._local_min) * 0.5 * np.abs(self._scale)
@@ -409,7 +410,9 @@ class Object3D:
         cyl_radius = float(np.maximum(half_ext[0], half_ext[2]))
         half_height = float(half_ext[1])
 
-        self._cached_cylinder = (center, cyl_radius, half_height)
+        cylinder = (center, cyl_radius, half_height)
+        
+        self.collider.update(sphere, obb, aabb, cylinder)
 
         # ----- Model matrix (row-major, matches view/projection math) -----
         sx, sy, sz = self._scale
@@ -465,19 +468,19 @@ class Object3D:
 
     def world_aabb(self):
         self._update_cache()
-        return self._cached_aabb
+        return self.collider.get_world_aabb()
 
     def world_obb(self):
         self._update_cache()
-        return self._cached_obb
+        return self.collider.get_world_obb()
 
     def world_sphere(self):
         self._update_cache()
-        return self._cached_sphere
+        return self.collider.get_world_sphere()
 
     def world_cylinder(self):
         self._update_cache()
-        return self._cached_cylinder
+        return self.collider.get_world_cylinder()
 
     # def get_model_matrix(self):
     #     self._update_cache()
@@ -499,8 +502,21 @@ class Object3D:
         """
         if other is None:
             return False
+        
+        self._update_cache()
+        other._update_cache()
+        
         from src.physics.collision import objects_collide
-        return objects_collide(self, other)
+        return objects_collide(self.collider, other.collider)
+
+    def contains_point(self, point: Tuple[float, float, float], radius: float = 1.0) -> bool:
+        """
+        Check if a 3D point is interacting with this object.
+        Treats the point as a sphere with the given radius.
+        """
+        self._update_cache()
+        from src.physics.collision import collide_point_with_radius
+        return collide_point_with_radius(np.array(point, dtype=np.float32), self.collider, radius)
 
     
     def __repr__(self):

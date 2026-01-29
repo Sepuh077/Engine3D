@@ -12,7 +12,6 @@ import math
 
 from src.engine3d import Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane
-from src.physics.collision import objects_collide
 
 
 class FPSCameraExample(Window3D):
@@ -132,7 +131,7 @@ class FPSCameraExample(Window3D):
         for obj in self.objects:
             # if obj.name == "cube":
             #     obj.rotation_y += delta_time * 20
-            if obj != self.camera_obj and objects_collide(obj, self.camera_obj):
+            if obj != self.camera_obj and obj.check_collision(self.camera_obj):
                 print(True)
         
         # Update title

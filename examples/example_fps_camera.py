@@ -15,7 +15,6 @@ import random
 
 from src.engine3d import Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane
-from src.physics.collision import objects_collide
 from src.physics import ColliderType
 
 
@@ -100,7 +99,7 @@ class FPSCameraExample(Window3D):
                 obj.rotation_y += delta_time * 20
                 obj.rotation_x += delta_time * 10
                 obj.rotation_z += delta_time * 5
-            if objects_collide(obj, self.camera_obj):
+            if obj.check_collision(self.camera_obj):
                 print(obj)
         
         # Update title

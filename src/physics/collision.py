@@ -1,12 +1,12 @@
 import numpy as np
 
-from src.engine3d import Object3D
+from src.physics.collider import Collider
 from src.physics import ColliderType
 
 
-def sphere_vs_sphere(a: Object3D, b: Object3D):
-    ca, ra = a.world_sphere()
-    cb, rb = b.world_sphere()
+def sphere_vs_sphere(a: Collider, b: Collider):
+    ca, ra = a.get_world_sphere()
+    cb, rb = b.get_world_sphere()
     diff = ca - cb
     return diff.dot(diff) <= (ra + rb) ** 2
 
@@ -39,15 +39,15 @@ def _obb_overlap(Ca, Aa, Ea, Cb, Ab, Eb):
     return True
 
 
-def obb_vs_obb(a: Object3D, b: Object3D):
-    Ca, Aa, Ea = a.world_obb()
-    Cb, Ab, Eb = b.world_obb()
+def obb_vs_obb(a: Collider, b: Collider):
+    Ca, Aa, Ea = a.get_world_obb()
+    Cb, Ab, Eb = b.get_world_obb()
     return _obb_overlap(Ca, Aa, Ea, Cb, Ab, Eb)
 
 
-def sphere_vs_obb(sphere_obj: Object3D, obb_obj: Object3D):
-    cs, rs = sphere_obj.world_sphere()
-    Cb, Ab, Eb = obb_obj.world_obb()
+def sphere_vs_obb(sphere_obj: Collider, obb_obj: Collider):
+    cs, rs = sphere_obj.get_world_sphere()
+    Cb, Ab, Eb = obb_obj.get_world_obb()
 
     d = cs - Cb
     local = Ab.T @ d
@@ -57,9 +57,9 @@ def sphere_vs_obb(sphere_obj: Object3D, obb_obj: Object3D):
     return diff.dot(diff) <= rs ** 2
 
 
-def sphere_vs_cylinder(sphere_obj: Object3D, cyl_obj: Object3D):
-    cs, rs = sphere_obj.world_sphere()
-    Cc, rc, hc = cyl_obj.world_cylinder()
+def sphere_vs_cylinder(sphere_obj: Collider, cyl_obj: Collider):
+    cs, rs = sphere_obj.get_world_sphere()
+    Cc, rc, hc = cyl_obj.get_world_cylinder()
 
     # Closest point on infinite cylinder axis (aligned with Y)
     clamped_y = np.clip(cs[1], Cc[1] - hc, Cc[1] + hc)
@@ -75,9 +75,9 @@ def sphere_vs_cylinder(sphere_obj: Object3D, cyl_obj: Object3D):
     return diff.dot(diff) <= rs ** 2
 
 
-def cylinder_vs_cylinder(a: Object3D, b: Object3D):
-    Ca, ra, ha = a.world_cylinder()
-    Cb, rb, hb = b.world_cylinder()
+def cylinder_vs_cylinder(a: Collider, b: Collider):
+    Ca, ra, ha = a.get_world_cylinder()
+    Cb, rb, hb = b.get_world_cylinder()
 
     # Vertical overlap
     if abs(Ca[1] - Cb[1]) > ha + hb:
@@ -88,24 +88,24 @@ def cylinder_vs_cylinder(a: Object3D, b: Object3D):
     return dx * dx + dz * dz <= (ra + rb) ** 2
 
 
-def cylinder_vs_obb(cyl_obj: Object3D, obb_obj: Object3D):
+def cylinder_vs_obb(cyl_obj: Collider, obb_obj: Collider):
     # Approximate cylinder as an upright box for collision against OBB
-    Cc, rc, hc = cyl_obj.world_cylinder()
+    Cc, rc, hc = cyl_obj.get_world_cylinder()
     Ca = Cc
     Aa = np.eye(3, dtype=np.float32)
     Ea = np.array([rc, hc, rc], dtype=np.float32)
 
-    Cb, Ab, Eb = obb_obj.world_obb()
+    Cb, Ab, Eb = obb_obj.get_world_obb()
     return _obb_overlap(Ca, Aa, Ea, Cb, Ab, Eb)
 
 
-def objects_collide(a: Object3D, b: Object3D):
+def objects_collide(a: Collider, b: Collider):
     # Broad phase using bounding spheres
     if not sphere_vs_sphere(a, b):
         return False
 
-    type_a = getattr(a, "collider_type", ColliderType.CUBE)
-    type_b = getattr(b, "collider_type", ColliderType.CUBE)
+    type_a = getattr(a, "type", ColliderType.CUBE)
+    type_b = getattr(b, "type", ColliderType.CUBE)
 
     if type_a == ColliderType.SPHERE and type_b == ColliderType.SPHERE:
         return True  # already passed sphere test
@@ -133,3 +133,17 @@ def objects_collide(a: Object3D, b: Object3D):
 
     # Fallback to OBB test for any unknown combination
     return obb_vs_obb(a, b)
+
+
+def collide_point_with_radius(point: np.ndarray, collider: Collider, radius: float = 1.0) -> bool:
+    """
+    Check collision treating the point as a sphere with a given radius.
+    Useful for 'thick' raycasts or forgiving mouse picking.
+    """
+    # Create a temporary proxy collider
+    point_proxy = Collider(ColliderType.SPHERE)
+    # We only need to populate the sphere cache for Sphere-vs-X checks
+    point_proxy.sphere = (point, radius)
+    
+    return objects_collide(point_proxy, collider)
+
