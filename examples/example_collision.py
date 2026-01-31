@@ -7,6 +7,7 @@ import sys
 import math
 import numpy as np
 import pygame
+import random
 
 # Add the project root to sys.path
 current_file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -14,7 +15,8 @@ project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
 from src.engine3d import Window3D, Keys, Color
-from src.engine3d.object3d import create_cube
+from src.engine3d.object3d import create_cube, create_plane
+from src.physics import ColliderType
 
 
 class CollisionExample(Window3D):
@@ -23,9 +25,13 @@ class CollisionExample(Window3D):
     def setup(self):
         """Called once at startup."""
         # Create some static obstacles
+        floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
+        floor.position = (0, 0, 0)
+        floor.static = True
+
         self.obstacles = []
         for i in range(4):
-            cube = self.add_object(create_cube(2.0, color=Color.GREEN))
+            cube = self.add_object(create_cube(2.0, color=Color.GREEN, collider_type=random.choice(ColliderType.all())))
             positions = [
                 (-5, 1, 0),
                 (5, 1, 0),
@@ -40,6 +46,8 @@ class CollisionExample(Window3D):
         self.player = self.add_object(create_cube(1.0, color=Color.BLUE))
         self.player.position = (0, 0.5, 0)
         self.player.draw_bounding_box = True
+        self.player.impassable_objects.extend(self.obstacles)
+        self.player.impassable_objects.append(floor)
 
         # Create some moving enemies
         self.enemies = []
@@ -59,7 +67,7 @@ class CollisionExample(Window3D):
         self.light.ambient = 0.3
 
         # Movement speed
-        self.move_speed = 50.0  # Increased for more visible movement
+        self.move_speed = 10.0  # Increased for more visible movement
 
         # Toggle for bounding boxes
         self.show_bounding_boxes = True
@@ -99,6 +107,7 @@ class CollisionExample(Window3D):
             self.move_dir[0] = -1
         if keys[pygame.K_d]:
             self.move_dir[0] = 1
+        self.move_dir[1] = -0.1
 
         # Move player based on input
         delta = self.move_speed * delta_time
@@ -106,7 +115,7 @@ class CollisionExample(Window3D):
         dy = self.move_dir[1] * delta
         dz = self.move_dir[2] * delta
         if dx != 0 or dy != 0 or dz != 0:
-            self.move_object(self.player, (dx, dy, dz), check_collisions=True, other_objs=self.obstacles)
+            self.move_object(self.player, (dx, dy, dz))
 
         # Update window title
         pos = self.player.position

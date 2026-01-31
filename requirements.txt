@@ -1,9 +1,10 @@
 # Core dependencies
-arcade==3.3.3
 pygame==2.6.1
 numpy>=1.20.0
 pyglet==2.1.11
 pillow==11.3.0
+trimesh>=4.0.0
+scipy>=1.10.0
 
 # Optional - for massive performance boost (5-20x faster)
 # Uncomment to install:

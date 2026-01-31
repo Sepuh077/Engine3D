@@ -44,7 +44,7 @@ class StaticBatch:
     vbo: 'moderngl.Buffer'
     vao: 'moderngl.VertexArray'
     vertex_count: int
-    color: Tuple[float, float, float]
+    color: Tuple[float, float, float, float]
     center: np.ndarray
     radius: float
 
@@ -77,17 +77,20 @@ class Window3D:
     
     in vec3 in_position;
     in vec3 in_normal;
+    in vec4 in_color;
     
     uniform mat4 mvp;
     uniform mat4 model;
     
     out vec3 frag_normal;
     out vec3 frag_position;
+    out vec4 frag_v_color;
     
     void main() {
         gl_Position = mvp * vec4(in_position, 1.0);
         frag_normal = mat3(model) * in_normal;
         frag_position = vec3(model * vec4(in_position, 1.0));
+        frag_v_color = in_color;
     }
     '''
 
@@ -96,6 +99,7 @@ class Window3D:
 
     in vec3 in_position;
     in vec3 in_normal;
+    in vec4 in_color;
     in vec4 in_model_0;
     in vec4 in_model_1;
     in vec4 in_model_2;
@@ -106,12 +110,14 @@ class Window3D:
 
     out vec3 frag_normal;
     out vec3 frag_position;
+    out vec4 frag_v_color;
 
     void main() {
         mat4 model = mat4(in_model_0, in_model_1, in_model_2, in_model_3);
         gl_Position = projection * view * model * vec4(in_position, 1.0);
         frag_normal = mat3(model) * in_normal;
         frag_position = vec3(model * vec4(in_position, 1.0));
+        frag_v_color = in_color;
     }
     '''
     
@@ -120,11 +126,12 @@ class Window3D:
     
     in vec3 frag_normal;
     in vec3 frag_position;
+    in vec4 frag_v_color;
     
     uniform vec3 light_dir;
     uniform vec3 light_color;
     uniform float ambient;
-    uniform vec3 base_color;
+    uniform vec4 base_color;
     
     out vec4 frag_color;
     
@@ -135,8 +142,11 @@ class Window3D:
         // Two-sided lighting
         float diffuse = abs(dot(normal, light));
         
-        vec3 color = base_color * light_color * (ambient + diffuse * (1.0 - ambient));
-        frag_color = vec4(color, 1.0);
+        // Combine vertex color and object tint
+        vec4 albedo = frag_v_color * base_color;
+        
+        vec3 color = albedo.rgb * light_color * (ambient + diffuse * (1.0 - ambient));
+        frag_color = vec4(color, albedo.a);
     }
     '''
 
@@ -201,7 +211,7 @@ class Window3D:
         
         # Create ModernGL context
         self._ctx = moderngl.create_context()
-        self._ctx.enable(moderngl.DEPTH_TEST)
+        self._ctx.enable(moderngl.DEPTH_TEST | moderngl.BLEND)
         
         # Compile shaders
         self._program = self._ctx.program(
@@ -322,23 +332,11 @@ class Window3D:
             self._release_mesh(obj)
         self.objects.clear()
 
-    def move_object(self, obj: Object3D, delta: Tuple[float, float, float],
-                    check_collisions: bool = False, other_objs: Optional[List[Object3D]] = None) -> bool:
+    def move_object(self, obj: Object3D, delta: Tuple[float, float, float]) -> bool:
         """
         Move an object by delta. Optionally check collisions and revert if needed.
         """
-        old_pos = obj.position
-        obj.move(*delta)
-
-        if check_collisions:
-            targets = other_objs if other_objs is not None else self._active_objects()
-            for other in targets:
-                if other is obj or not other.visible:
-                    continue
-                if obj.check_collision(other):
-                    obj.position = old_pos
-                    return False
-        return True
+        return obj.move(*delta)
 
     def _update_profiler(self, stats: dict):
         if not self.show_profiler:
@@ -371,17 +369,17 @@ class Window3D:
 
         mesh = self._mesh_cache.get(key)
         if mesh is None:
-            if obj._vertices is None or obj._faces is None:
+            flat_vertices, flat_normals, flat_colors = obj._get_flattened_geometry()
+            
+            if flat_vertices is None:
                 raise RuntimeError("Object has no geometry loaded")
 
-            flat_vertices = obj._vertices[obj._faces.flatten()]
-            flat_normals = obj._normals[obj._faces.flatten()]
-            vertex_data = np.hstack([flat_vertices, flat_normals]).astype(np.float32)
+            vertex_data = np.hstack([flat_vertices, flat_normals, flat_colors]).astype(np.float32)
 
             vbo = self._ctx.buffer(vertex_data.tobytes())
             vao = self._ctx.vertex_array(
                 self._program,
-                [(vbo, '3f 3f', 'in_position', 'in_normal')]
+                [(vbo, '3f 3f 4f', 'in_position', 'in_normal', 'in_color')]
             )
 
             mesh = MeshGPU(
@@ -458,15 +456,16 @@ class Window3D:
         for (_, color), objs in groups.items():
             vertices_list = []
             normals_list = []
+            colors_list = []
 
             for obj in objs:
-                if obj._vertices is None or obj._faces is None:
+                flat_vertices, flat_normals, flat_colors = obj._get_flattened_geometry()
+                
+                if flat_vertices is None:
                     continue
 
                 model = obj.get_model_matrix()
-                flat_vertices = obj._vertices[obj._faces.flatten()]
-                flat_normals = obj._normals[obj._faces.flatten()]
-
+                
                 ones = np.ones((len(flat_vertices), 1), dtype=np.float32)
                 v_h = np.hstack([flat_vertices, ones])
                 v_world = v_h @ model
@@ -482,18 +481,21 @@ class Window3D:
 
                 vertices_list.append(v_world[:, :3])
                 normals_list.append(n_world)
+                colors_list.append(flat_colors)
 
             if not vertices_list:
                 continue
 
             verts = np.vstack(vertices_list)
             norms = np.vstack(normals_list)
-            vertex_data = np.hstack([verts, norms]).astype(np.float32)
+            cols = np.vstack(colors_list)
+            
+            vertex_data = np.hstack([verts, norms, cols]).astype(np.float32)
 
             vbo = self._ctx.buffer(vertex_data.tobytes())
             vao = self._ctx.vertex_array(
                 self._program,
-                [(vbo, '3f 3f', 'in_position', 'in_normal')]
+                [(vbo, '3f 3f 4f', 'in_position', 'in_normal', 'in_color')]
             )
 
             min_v = verts.min(axis=0)
@@ -506,7 +508,7 @@ class Window3D:
                     vbo=vbo,
                     vao=vao,
                     vertex_count=len(verts),
-                    color=color,
+                    color=color if len(color) == 4 else (*color, 1.0),
                     center=center,
                     radius=radius,
                 )
@@ -526,7 +528,7 @@ class Window3D:
             mesh.instanced_vao = self._ctx.vertex_array(
                 self._instanced_program,
                 [
-                    (mesh.vbo, '3f 3f', 'in_position', 'in_normal'),
+                    (mesh.vbo, '3f 3f 4f', 'in_position', 'in_normal', 'in_color'),
                     (mesh.instance_vbo, '4f 4f 4f 4f /i',
                      'in_model_0', 'in_model_1', 'in_model_2', 'in_model_3'),
                 ]
@@ -829,6 +831,31 @@ class Window3D:
             model = S @ R4 @ T
 
             vao = self._cylinder_vao
+            
+        elif t == ColliderType.MESH:
+            # Fallback to drawing OBB for Mesh colliders
+            center, axes, extents = obj.world_obb()
+
+            S = np.array([
+                [extents[0], 0, 0, 0],
+                [0, extents[1], 0, 0],
+                [0, 0, extents[2], 0],
+                [0, 0, 0, 1],
+            ], dtype=np.float32)
+
+            R4 = np.eye(4, dtype=np.float32)
+            R4[:3, :3] = axes
+
+            T = np.array([
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 1, 0],
+                [center[0], center[1], center[2], 1],
+            ], dtype=np.float32)
+
+            model = S @ R4 @ T
+
+            vao = self._cube_vao
 
         mvp = model @ view @ proj
         self._collider_program['mvp'].write(mvp.tobytes())
@@ -961,7 +988,8 @@ class Window3D:
                 mesh.instance_vbo.write(models.tobytes())
 
                 if self._last_instanced_base_color != color:
-                    self._instanced_program['base_color'].value = color
+                    rgba = color if len(color) == 4 else (*color, 1.0)
+                    self._instanced_program['base_color'].value = rgba
                     self._last_instanced_base_color = color
 
                 mesh.instanced_vao.render(
@@ -981,9 +1009,10 @@ class Window3D:
             self._program['model'].write(model.astype(np.float32).tobytes())
 
             color = tuple(obj._color)
-            if self._last_base_color != color:
-                self._program['base_color'].value = color
-                self._last_base_color = color
+            rgba = color if len(color) == 4 else (*color, 1.0)
+            if self._last_base_color != rgba:
+                self._program['base_color'].value = rgba
+                self._last_base_color = rgba
 
             if obj._mesh is not None:
                 vao = obj._mesh.vao

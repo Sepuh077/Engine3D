@@ -6,8 +6,8 @@ from typing import Tuple, Union
 import random
 
 
-# Type alias for color
-ColorType = Tuple[float, float, float]
+# Type alias for color (RGB or RGBA)
+ColorType = Union[Tuple[float, float, float], Tuple[float, float, float, float]]
 
 
 class Color:
@@ -43,39 +43,66 @@ class Color:
     SAND = (0.76, 0.7, 0.5)
     
     @staticmethod
-    def from_rgb(r: int, g: int, b: int) -> ColorType:
-        """Create color from RGB values (0-255)."""
-        return (r / 255.0, g / 255.0, b / 255.0)
+    def from_rgb(r: int, g: int, b: int, a: int = 255) -> ColorType:
+        """Create color from RGB(A) values (0-255)."""
+        if a == 255:
+            return (r / 255.0, g / 255.0, b / 255.0)
+        return (r / 255.0, g / 255.0, b / 255.0, a / 255.0)
     
     @staticmethod
     def from_hex(hex_color: str) -> ColorType:
-        """Create color from hex string (e.g., '#FF5500' or 'FF5500')."""
+        """Create color from hex string (e.g., '#FF5500', 'FF5500', '#FF550080')."""
         hex_color = hex_color.lstrip('#')
         r = int(hex_color[0:2], 16) / 255.0
         g = int(hex_color[2:4], 16) / 255.0
         b = int(hex_color[4:6], 16) / 255.0
+        
+        if len(hex_color) == 8:
+            a = int(hex_color[6:8], 16) / 255.0
+            return (r, g, b, a)
+            
         return (r, g, b)
     
     @staticmethod
-    def random() -> ColorType:
+    def random(alpha: bool = False) -> ColorType:
         """Generate a random color."""
+        if alpha:
+            return (random.random(), random.random(), random.random(), random.random())
         return (random.random(), random.random(), random.random())
     
     @staticmethod
-    def random_bright() -> ColorType:
+    def random_bright(alpha: bool = False) -> ColorType:
         """Generate a random bright color."""
-        return (
+        c = (
             0.3 + 0.7 * random.random(),
             0.3 + 0.7 * random.random(),
             0.3 + 0.7 * random.random()
         )
+        if alpha:
+            return (*c, random.random())
+        return c
     
     @staticmethod
     def lerp(color1: ColorType, color2: ColorType, t: float) -> ColorType:
         """Linearly interpolate between two colors."""
         t = max(0, min(1, t))
-        return (
-            color1[0] + (color2[0] - color1[0]) * t,
-            color1[1] + (color2[1] - color1[1]) * t,
-            color1[2] + (color2[2] - color1[2]) * t
-        )
+        
+        r1, g1, b1 = color1[:3]
+        a1 = color1[3] if len(color1) > 3 else 1.0
+        
+        r2, g2, b2 = color2[:3]
+        a2 = color2[3] if len(color2) > 3 else 1.0
+        
+        r = r1 + (r2 - r1) * t
+        g = g1 + (g2 - g1) * t
+        b = b1 + (b2 - b1) * t
+        a = a1 + (a2 - a1) * t
+        
+        if a >= 0.999 and len(color1) == 3 and len(color2) == 3:
+            return (r, g, b)
+        return (r, g, b, a)
+
+    @staticmethod
+    def with_alpha(color: ColorType, alpha: float) -> ColorType:
+        """Return a new color with the specified alpha value."""
+        return (*color[:3], alpha)

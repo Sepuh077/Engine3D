@@ -25,7 +25,7 @@ class FPSCameraExample(Window3D):
         # Create a floor
         floor = self.add_object(create_plane(50, 50, color=Color.DARK_GRAY))
         floor.position = (0, 0, 0)
-        # floor.static = True
+        floor.static = True
         values = ColliderType.all()
         
         # Create some objects to look at
@@ -61,6 +61,7 @@ class FPSCameraExample(Window3D):
         self.camera.position = (0, 2, 10)
         self.camera.look_at((0, 2, 0))
         self.camera_obj = create_cube(1, self.camera.position)
+        self.camera_obj.impassable_objects.append(floor)
         
         # Mouse look settings
         self.mouse_sensitivity = 0.002

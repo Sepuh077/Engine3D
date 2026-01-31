@@ -1,12 +1,11 @@
-"""
-Object3D - 3D object that can be loaded, positioned, rotated, and scaled.
-"""
+"Object3D - 3D object that can be loaded, positioned, rotated, and scaled."
 import hashlib
 import numpy as np
 from typing import Tuple, Optional, List, TYPE_CHECKING
 
 from src.physics import ColliderType
 from src.physics.collider import Collider
+from trimesh.visual.texture import TextureVisuals
 from .color import ColorType, Color
 
 if TYPE_CHECKING:
@@ -41,6 +40,7 @@ class Object3D:
         self._vertices = None
         self._faces = None
         self._normals = None
+        self._vertex_colors = None  # (N, 4) float32 0-1
 
         self._local_min = None
         self._local_max = None
@@ -53,6 +53,8 @@ class Object3D:
         self.draw_bounding_box = False
         self.name = "Object3D"
         self.tag = None
+        # List of objects that this object cannot pass through
+        self.impassable_objects: List['Object3D'] = []
 
         # GPU handles (initialized later)
         self._vbo = None
@@ -71,8 +73,34 @@ class Object3D:
     # ======================================================================
 
     def load(self, filename: str):
-        vertices, faces = [], []
+        # 1. Load geometry based on file extension
+        if filename.lower().endswith('.obj'):
+            self._load_obj_internal(filename)
+        else:
+            self._load_with_trimesh(filename)
 
+        # 2. Post-processing
+        self._post_process_geometry(filename)
+
+    def _post_process_geometry(self, geometry_name: str):
+        """
+        Centering, bounds calculation, normal computation, and marking as dirty.
+        Should be called after setting _vertices and _faces.
+        """
+        if self._vertices is not None and len(self._vertices) > 0:
+            center = self._vertices.mean(axis=0)
+            self._vertices -= center
+
+            self._local_min = self._vertices.min(axis=0)
+            self._local_max = self._vertices.max(axis=0)
+            self._local_radius = np.linalg.norm(self._vertices, axis=1).max()
+
+            self._compute_normals()
+            self._mesh_key = ("geom", geometry_name)
+            self._transform_dirty = True
+
+    def _load_obj_internal(self, filename: str):
+        vertices, faces = [], []
         with open(filename) as f:
             for line in f:
                 if line.startswith("v "):
@@ -81,22 +109,142 @@ class Object3D:
                     idx = [int(p.split("/")[0]) - 1 for p in line.split()[1:]]
                     for i in range(1, len(idx) - 1):
                         faces.append([idx[0], idx[i], idx[i + 1]])
-
+        
         self._vertices = np.array(vertices, dtype=np.float32)
         self._faces = np.array(faces, dtype=np.int32)
 
-        center = self._vertices.mean(axis=0)
-        self._vertices -= center
+    def _load_with_trimesh(self, filename: str):
+        try:
+            import trimesh
+            from trimesh.visual.texture import TextureVisuals
+        except ImportError:
+            raise ImportError(
+                "To load non-OBJ files (like FBX/GLTF), install:\n"
+                "pip install trimesh scipy pillow"
+            )
 
-        self._local_min = self._vertices.min(axis=0)
-        self._local_max = self._vertices.max(axis=0)
-        self._local_radius = np.linalg.norm(self._vertices, axis=1).max()
+        mesh = trimesh.load_mesh(filename)
 
-        self._compute_normals()
+        # --- Handle Scene (multiple geometries) ---
+        if isinstance(mesh, trimesh.Scene):
+            geometries = list(mesh.geometry.values())
+            if not geometries:
+                raise ValueError(f"No geometry found in {filename}")
+            mesh = trimesh.util.concatenate(geometries)
 
-        self._mesh_key = ("obj", filename)
-        self._transform_dirty = True
-    
+        self._vertices = np.array(mesh.vertices, dtype=np.float32)
+        self._faces = np.array(mesh.faces, dtype=np.int32)
+
+        self._vertex_colors = None
+        self._uses_texture = False
+        self._texture_image = None
+        self._uv = None
+
+        if not hasattr(mesh, "visual"):
+            return
+
+        visual = mesh.visual
+
+        # ============================================================
+        # CASE 1 — REAL VERTEX COLORS (safe)
+        # ============================================================
+        if (
+            hasattr(visual, "vertex_colors")
+            and visual.vertex_colors is not None
+            and len(visual.vertex_colors) == len(self._vertices)
+        ):
+            colors = visual.vertex_colors.astype(np.float32)
+            if colors.max() > 1.0:
+                colors /= 255.0
+            if colors.shape[1] == 3:
+                colors = np.pad(colors, ((0, 0), (0, 1)), constant_values=1.0)
+
+            self._vertex_colors = colors
+            return
+
+        # ============================================================
+        # CASE 2 — TEXTURED MESH
+        # ============================================================
+        if isinstance(visual, TextureVisuals):
+            material = visual.material
+
+            # --- Detect alpha usage (foliage, fences, etc.) ---
+            alpha_mode = getattr(material, "alphaMode", "OPAQUE")
+            if alpha_mode != "OPAQUE":
+                # DO NOT convert to vertex colors
+                self._uses_texture = True
+                self._texture_image = (
+                    getattr(material, "baseColorTexture", None)
+                    or getattr(material, "image", None)
+                )
+                self._uv = visual.uv
+                return
+
+            # --- No alpha → safe to approximate with vertex colors ---
+            img = (
+                getattr(material, "baseColorTexture", None)
+                or getattr(material, "image", None)
+            )
+
+            uv = visual.uv
+
+            if img is None or uv is None:
+                return
+
+            img = np.array(img).astype(np.float32) / 255.0
+            h, w = img.shape[:2]
+
+            def sample_color(u, v):
+                u = u % 1.0
+                v = v % 1.0
+                x = np.clip(int(u * (w - 1)), 0, w - 1)
+                y = np.clip(int((1 - v) * (h - 1)), 0, h - 1)
+                c = img[y, x]
+                if c.shape[0] == 3:
+                    c = np.append(c, 1.0)
+                return c
+
+            num_uv = len(uv)
+            num_vertices = len(self._vertices)
+            num_faces = len(self._faces)
+
+            v_colors = np.zeros((num_vertices, 4), dtype=np.float32)
+            counts = np.zeros(num_vertices, dtype=np.int32)
+
+            # ------------------------------------------------------------
+            # UV PER VERTEX  (Blender FBX / OBJ style)
+            # ------------------------------------------------------------
+            if num_uv == num_vertices:
+                for vert_idx in range(num_vertices):
+                    u, v = uv[vert_idx]
+                    v_colors[vert_idx] = sample_color(u, v)
+
+            # ------------------------------------------------------------
+            # UV PER FACE-CORNER (GLTF / game assets)
+            # ------------------------------------------------------------
+            elif num_uv == num_faces * 3:
+                for face_idx, face in enumerate(self._faces):
+                    for corner in range(3):
+                        vert_idx = face[corner]
+                        uv_idx = face_idx * 3 + corner
+                        u, v = uv[uv_idx]
+
+                        v_colors[vert_idx] += sample_color(u, v)
+                        counts[vert_idx] += 1
+
+                for i in range(num_vertices):
+                    if counts[i] > 0:
+                        v_colors[i] /= counts[i]
+                    else:
+                        v_colors[i] = [1, 1, 1, 1]
+
+            else:
+                # Unknown UV layout
+                return
+
+            self._vertex_colors = v_colors
+            return
+
     def _compute_normals(self):
         normals = np.zeros_like(self._vertices)
         for face in self._faces:
@@ -171,13 +319,66 @@ class Object3D:
         self._position[2] = value
         self._mark_dirty()
     
-    def move(self, dx: float = 0, dy: float = 0, dz: float = 0):
-        """Move object by offset."""
-        self._position += np.array([dx, dy, dz], dtype=np.float32)
+    def move(self, dx: float = 0, dy: float = 0, dz: float = 0) -> bool:
+        """
+        Move object by offset with iterative physics response.
+        Handles sliding against multiple surfaces (e.g. wall + floor).
+        """
+        original_pos = self._position.copy()
+        delta = np.array([dx, dy, dz], dtype=np.float32)
+        
+        # Iterative solver to resolve multiple constraints (e.g. Floor + Wall)
+        for _ in range(5):
+            # 1. Try moving with current delta
+            target_pos = original_pos + delta
+            self._position = target_pos
+            self._mark_dirty()
+            
+            # 2. Check for BLOCKING collisions
+            blocking_manifold = None
+            
+            self._update_cache()
+            for obj in self.impassable_objects:
+                obj._update_cache()
+                
+                from src.physics.collision import get_collision_manifold
+                manifold = get_collision_manifold(self.collider, obj.collider)
+                
+                if manifold:
+                    # Check if this is a blocking collision
+                    # Normal points B(Obstacle) -> A(Self)
+                    dot_prod = np.dot(delta, manifold.normal)
+                    
+                    if dot_prod < -1e-5:
+                        # Moving INTO the object. This is a blocker.
+                        blocking_manifold = manifold
+                        break
+            
+            if blocking_manifold is None:
+                return True
+            
+            # 3. Handle Blocker
+            # Revert to start of this iteration
+            self._position = original_pos
+            self._mark_dirty()
+            
+            # Calculate slide vector
+            normal = blocking_manifold.normal
+            d = np.dot(delta, normal)
+            
+            # Remove velocity component into the wall
+            delta = delta - d * normal
+            
+            # Check if we have any movement left
+            if np.dot(delta, delta) < 1e-10:
+                return True
+                
+        self._position = original_pos
         self._mark_dirty()
-    
+        return True
+
     # =========================================================================
-    # Rotation properties (in degrees for user convenience)
+    # Rotation properties
     # =========================================================================
     
     @property
@@ -195,7 +396,6 @@ class Object3D:
     def rotation_x(self) -> float:
         """Rotation around X axis in degrees."""
         return float(np.degrees(self._rotation[0]))
-    
     
     @rotation_x.setter
     def rotation_x(self, value: float):
@@ -338,26 +538,48 @@ class Object3D:
         return self._cached_model
     
     # =========================================================================
+    # GPU Helpers
+    # =========================================================================
+
+    def _get_flattened_geometry(self):
+        """
+        Returns (vertices, normals, colors) flattened for drawing.
+        Colors are (N, 4) float32.
+        """
+        if self._vertices is None or self._faces is None:
+            return None, None, None
+
+        flat_vertices = self._vertices[self._faces.flatten()]
+        flat_normals = self._normals[self._faces.flatten()]
+        
+        # Handle colors
+        if self._vertex_colors is not None:
+            flat_colors = self._vertex_colors[self._faces.flatten()]
+        else:
+            # Default white
+            flat_colors = np.ones((len(flat_vertices), 4), dtype=np.float32)
+            
+        return flat_vertices, flat_normals, flat_colors
+
+    # =========================================================================
     # GPU methods (called by renderer)
     # =========================================================================
     
     def _init_gpu(self, ctx: 'moderngl.Context', program: 'moderngl.Program'):
         """Initialize GPU resources. Called by renderer."""
-        if self._vertices is None:
-            raise RuntimeError("Object has no geometry loaded")
+        flat_vertices, flat_normals, flat_colors = self._get_flattened_geometry()
         
-        # Flatten vertices for rendering
-        flat_vertices = self._vertices[self._faces.flatten()]
-        flat_normals = self._normals[self._faces.flatten()]
+        if flat_vertices is None:
+             raise RuntimeError("Object has no geometry loaded")
         
         # Interleave data
-        vertex_data = np.hstack([flat_vertices, flat_normals]).astype(np.float32)
+        vertex_data = np.hstack([flat_vertices, flat_normals, flat_colors]).astype(np.float32)
         
         # Create GPU buffers
         self._vbo = ctx.buffer(vertex_data.tobytes())
         self._vao = ctx.vertex_array(
             program,
-            [(self._vbo, '3f 3f', 'in_position', 'in_normal')]
+            [(self._vbo, '3f 3f 4f', 'in_position', 'in_normal', 'in_color')]
         )
         self._gpu_initialized = True
     
@@ -438,6 +660,12 @@ class Object3D:
         model = S @ R4 @ T
 
         self._cached_model = model
+        
+        # ----- Mesh Data -----
+        # Only needed if type is MESH, but passing it doesn't hurt (references are cheap)
+        mesh_data = (self._vertices, self._faces, model)
+        
+        self.collider.update(sphere, obb, aabb, cylinder, mesh_data)
 
         self._transform_dirty = False
 
@@ -481,10 +709,6 @@ class Object3D:
     def world_cylinder(self):
         self._update_cache()
         return self.collider.get_world_cylinder()
-
-    # def get_model_matrix(self):
-    #     self._update_cache()
-    #     return self._cached_model
 
     def draw_collider(self, window: 'Window3D', color: Tuple[float, float, float] = (0, 1, 0), line_width: float = 1.0):
         """
@@ -569,11 +793,9 @@ def create_cube(size: float = 1.0,
         [20, 21, 22], [20, 22, 23], # Left
     ], dtype=np.int32)
     
-    obj.vertices = vertices
+    obj._vertices = vertices
     obj._faces = faces
-    obj._center = np.zeros(3, dtype=np.float32)
-    obj._compute_normals()
-    obj._mesh_key = ("primitive", ColliderType.CUBE, float(size))
+    obj._post_process_geometry(f"primitive_cube_{size}")
     
     return obj
 
@@ -609,10 +831,12 @@ def create_plane(width: float = 10.0,
         [0, 2, 1],  # Facing up
         [0, 3, 2],
     ], dtype=np.int32)
-    
-    obj.vertices = vertices
+
+    obj._vertices = vertices
+
     obj._faces = faces
-    obj._center = np.zeros(3, dtype=np.float32)
-    obj._compute_normals()
-    
+
+    obj._post_process_geometry(f"primitive_plane_{width}_{height}")
+
     return obj
+ 

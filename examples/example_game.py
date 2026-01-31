@@ -43,10 +43,9 @@ class FPSCameraExample(Window3D):
         
         # Load the stairs model
         stairs = self.load_object(
-            "example/stairs_modular_right.obj",
+            r"D:\workspace\3d-game-engine\assets\glTF\Bush_Common_Flowers.gltf",
             position=(0, 0, 0),
             scale=2.0,
-            color=Color.ORANGE
         )
         
         # Camera setup - first person style
