@@ -672,27 +672,41 @@ class Object3D:
         local_center = (self._local_min + self._local_max) * 0.5
 
         center_offset = R @ (local_center * self._scale)
-        center = self._position + center_offset
+        base_center = self._position + center_offset
+
+        # ----- Dimensions for Offsets -----
+        # Calculate Base AABB dimensions (width, height, depth) of the mesh/geometry
+        # This corresponds to (max_x - min_x) etc. BEFORE collider offset
+        absR = np.abs(R)
+        half_extents = absR @ extents
+        aabb_dims = half_extents * 2
+        
+        # Calculate collider center offset
+        # user formula: object.center + [(width * 0.2), ...]
+        c_offset = aabb_dims * np.array(self.collider.center, dtype=np.float32)
+        collider_center = base_center + c_offset
 
         # ----- OBB -----
-        obb = (center, R, extents)
+        # Apply size multiplier for Cube/OBB
+        obb_extents = extents * np.array(self.collider.size, dtype=np.float32)
+        obb = (collider_center, R, obb_extents)
 
         # ----- Sphere -----
-        radius = self._local_radius * np.max(np.abs(self._scale))
-        sphere = (center, float(radius))
+        # Apply radius multiplier
+        radius = self._local_radius * np.max(np.abs(self._scale)) * self.collider.radius
+        sphere = (collider_center, float(radius))
 
         # ----- AABB from OBB (fast way) -----
-        absR = np.abs(R)
-        half = absR @ extents
-        aabb = (center - half, center + half)
+        # This is the AABB of the COLLIDER
+        half = absR @ obb_extents
+        aabb = (collider_center - half, collider_center + half)
 
         # ----- Cylinder -----
         half_ext = (self._local_max - self._local_min) * 0.5 * np.abs(self._scale)
+        cyl_radius = float(np.maximum(half_ext[0], half_ext[2])) * self.collider.radius
+        half_height = float(half_ext[1]) * self.collider.height
 
-        cyl_radius = float(np.maximum(half_ext[0], half_ext[2]))
-        half_height = float(half_ext[1])
-
-        cylinder = (center, cyl_radius, half_height)
+        cylinder = (collider_center, cyl_radius, half_height)
         
         self.collider.update(sphere, obb, aabb, cylinder)
 

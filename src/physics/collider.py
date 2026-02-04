@@ -5,9 +5,17 @@ from .types import ColliderType
 class Collider:
     def __init__(self, collider_type: ColliderType = ColliderType.CUBE):
         self.type = collider_type
+        
+        # Configuration (relative offsets/scaling)
+        self.center = [0.0, 0.0, 0.0]  # Relative offset (ratio of AABB size)
+        self.radius = 1.0              # Radius multiplier (Sphere/Cylinder)
+        self.size = [1.0, 1.0, 1.0]    # Size multiplier (Cube)
+        self.height = 1.0              # Height multiplier (Cylinder)
+
         # Cached world bounds
         # (center, radius)
         self.sphere: Optional[Tuple[np.ndarray, float]] = None
+
         # (center, rotation_matrix, extents)
         self.obb: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
         # (min_point, max_point)
