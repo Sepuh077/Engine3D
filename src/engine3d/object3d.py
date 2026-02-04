@@ -289,6 +289,67 @@ class Object3D:
     def z(self, value: float):
         self._position[2] = value
         self._mark_dirty()
+
+    # ---------------- Bounds ----------------
+    @property
+    def min_x(self) -> float:
+        """World-space minimum X coordinate."""
+        self._update_cache()
+        return float(self.collider.aabb[0][0])
+
+    @min_x.setter
+    def min_x(self, value: float):
+        self.x += value - self.min_x
+
+    @property
+    def max_x(self) -> float:
+        """World-space maximum X coordinate."""
+        self._update_cache()
+        return float(self.collider.aabb[1][0])
+
+    @max_x.setter
+    def max_x(self, value: float):
+        self.x += value - self.max_x
+
+    @property
+    def min_y(self) -> float:
+        """World-space minimum Y coordinate."""
+        self._update_cache()
+        return float(self.collider.aabb[0][1])
+
+    @min_y.setter
+    def min_y(self, value: float):
+        self.y += value - self.min_y
+
+    @property
+    def max_y(self) -> float:
+        """World-space maximum Y coordinate."""
+        self._update_cache()
+        return float(self.collider.aabb[1][1])
+
+    @max_y.setter
+    def max_y(self, value: float):
+        self.y += value - self.max_y
+
+    @property
+    def min_z(self) -> float:
+        """World-space minimum Z coordinate."""
+        self._update_cache()
+        return float(self.collider.aabb[0][2])
+
+    @min_z.setter
+    def min_z(self, value: float):
+        self.z += value - self.min_z
+
+    @property
+    def max_z(self) -> float:
+        """World-space maximum Z coordinate."""
+        self._update_cache()
+        return float(self.collider.aabb[1][2])
+
+    @max_z.setter
+    def max_z(self, value: float):
+        self.z += value - self.max_z
     
     def move(self, dx: float = 0, dy: float = 0, dz: float = 0) -> bool:
         """
@@ -310,6 +371,8 @@ class Object3D:
             
             self._update_cache()
             for obj in self.impassable_objects:
+                if obj is self:
+                    continue
                 obj._update_cache()
                 
                 from src.physics.collision import get_collision_manifold
