@@ -4,7 +4,7 @@ import numpy as np
 import trimesh
 from typing import Tuple, Optional, List, TYPE_CHECKING
 
-from src.physics import ColliderType, ObjectGroup
+from src.physics import ColliderType, CollisionMode, ObjectGroup
 from src.physics.collider import Collider
 from trimesh.visual.texture import TextureVisuals
 from .color import ColorType, Color
@@ -22,6 +22,7 @@ class Object3D:
         scale: float = 1.0,
         color: Optional[ColorType] = None,
         collider_type: str = ColliderType.CUBE,
+        collision_mode: CollisionMode = CollisionMode.NORMAL,
     ):
         # ---------------- Transform ----------------
         self._position = np.array(position, dtype=np.float32)
@@ -65,7 +66,9 @@ class Object3D:
         self.tag = None
         self.group: Optional[ObjectGroup] = None
         self._current_collisions: set = set()
-        self.velocity = np.zeros(3, dtype=np.float32)  # For slide/project on collision
+        self.velocity = np.zeros(3, dtype=np.float32)
+        self._collision_mode = collision_mode
+        self._prev_position = np.copy(self._position)
 
         # GPU handles (initialized later)
         self._vbo = None
@@ -254,6 +257,7 @@ class Object3D:
     @position.setter
     def position(self, value: Tuple[float, float, float]):
         """Set position."""
+        self._update_prev_position()
         self._position = np.array(value, dtype=np.float32)
         self._mark_dirty()
     
@@ -263,7 +267,7 @@ class Object3D:
     
     @x.setter
     def x(self, value: float):
-        """Set x (substeps via position if large)."""
+        """Set x."""
         self.position = (value, self.y, self.z)
     
     @property
@@ -272,7 +276,7 @@ class Object3D:
     
     @y.setter
     def y(self, value: float):
-        """Set y (substeps via position if large)."""
+        """Set y."""
         self.position = (self.x, value, self.z)
     
     @property
@@ -281,7 +285,7 @@ class Object3D:
     
     @z.setter
     def z(self, value: float):
-        """Set z (substeps via position if large)."""
+        """Set z."""
         self.position = (self.x, self.y, value)
 
     # ---------------- Bounds ----------------
@@ -346,16 +350,15 @@ class Object3D:
         self.z += value - self.max_z
     
     def move(self, dx: float = 0, dy: float = 0, dz: float = 0) -> bool:
-        # Substep for high-speed to prevent tunneling (e.g. bullet vs thin wall)
+        self._update_prev_position()
         delta = np.array([dx, dy, dz], dtype=np.float32)
-        speed = np.linalg.norm(delta)
-        steps = max(1, int(speed / 0.5))  # substep if >0.5 units/frame
-        step = delta / steps
-        for _ in range(steps):
-            self._position += step
-            self._mark_dirty()
-        self.velocity = delta  # instant velocity for slide/project
+        self._position += delta
+        self._mark_dirty()
+        self.velocity = delta
         return True
+
+    def _update_prev_position(self):
+        self._prev_position = np.copy(self._position)
 
     # =========================================================================
     # Rotation properties
@@ -445,6 +448,14 @@ class Object3D:
     @collider_type.setter
     def collider_type(self, value: ColliderType):
         self.collider.type = value
+
+    @property
+    def collision_mode(self) -> CollisionMode:
+        return self._collision_mode
+
+    @collision_mode.setter
+    def collision_mode(self, value: CollisionMode):
+        self._collision_mode = value
     
     # =========================================================================
     # Appearance properties
@@ -776,7 +787,8 @@ class Object3D:
 def create_cube(size: float = 1.0, 
                 position: Tuple[float, float, float] = (0, 0, 0),
                 color: Optional[ColorType] = None,
-                collider_type: str = ColliderType.CUBE) -> Object3D:
+                collider_type: str = ColliderType.CUBE,
+                collision_mode: CollisionMode = CollisionMode.NORMAL) -> Object3D:
     """
     Create a cube primitive.
     
@@ -788,7 +800,7 @@ def create_cube(size: float = 1.0,
     Returns:
         Object3D cube
     """
-    obj = Object3D(position=position, color=color, collider_type=collider_type)
+    obj = Object3D(position=position, color=color, collider_type=collider_type, collision_mode=collision_mode)
     
     s = size / 2
     vertices = np.array([
@@ -820,7 +832,8 @@ def create_plane(width: float = 10.0,
                  height: float = 10.0,
                  position: Tuple[float, float, float] = (0, 0, 0),
                  color: Optional[ColorType] = None,
-                 collider_type: str = ColliderType.CUBE) -> Object3D:
+                 collider_type: str = ColliderType.CUBE,
+                 collision_mode: CollisionMode = CollisionMode.NORMAL) -> Object3D:
     """
     Create a horizontal plane primitive.
     
@@ -833,7 +846,7 @@ def create_plane(width: float = 10.0,
     Returns:
         Object3D plane
     """
-    obj = Object3D(position=position, color=color, collider_type=collider_type)
+    obj = Object3D(position=position, color=color, collider_type=collider_type, collision_mode=collision_mode)
     
     w, h = width / 2, height / 2
     vertices = np.array([

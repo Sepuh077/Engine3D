@@ -20,7 +20,7 @@ from .camera import Camera3D
 from .light import Light3D
 from .color import Color, ColorType
 from .keys import Keys
-from src.physics import ColliderType, CollisionRelation, ObjectGroup
+from src.physics import ColliderType, CollisionMode, CollisionRelation, ObjectGroup
 
 try:
     import moderngl
@@ -408,8 +408,10 @@ class Window3D:
 
     def move_object(self, obj: Object3D, delta: Tuple[float, float, float]) -> bool:
         """
-        Move an object by delta. Optionally check collisions and revert if needed.
+        Move an object by delta.
         """
+        if obj.collision_mode == CollisionMode.IGNORE:
+            return obj.move(*delta)
         return obj.move(*delta)
 
     def _resolve_collision(self, a: Object3D, b: Object3D, manifold):
@@ -469,6 +471,74 @@ class Window3D:
         for a in all_objs:
             if a.static:
                 continue
+            if a.collision_mode == CollisionMode.IGNORE:
+                continue
+            # Continuous: sweep from prev to current (prevents tunnel, respects groups)
+            if a.collision_mode == CollisionMode.CONTINUOUS:
+                delta = a._position - a._prev_position
+                speed = np.linalg.norm(delta)
+                if speed > 1e-6:
+                    final_pos = np.copy(a._position)
+                    a._position = np.copy(a._prev_position)
+                    a._mark_dirty()
+                    steps = max(1, int(speed / 0.1))
+                    step = delta / steps
+                    last_safe = np.copy(a._position)
+                    for _ in range(steps):
+                        a._position += step
+                        a._mark_dirty()
+                        hit_solid = False
+                        for b in all_objs:
+                            if b is a or b.group is None:
+                                continue
+                            rel = a.group.get_relation(b.group)
+                            if rel == CollisionRelation.IGNORE or b.group.get_relation(a.group) == CollisionRelation.IGNORE:
+                                continue
+                            if a.check_collision(b):
+                                # Detect for events (TRIGGER/SOLID); resolve+stop only SOLID
+                                current_collisions[a].add(b)
+                                current_collisions[b].add(a)
+                                if rel == CollisionRelation.SOLID or b.group.get_relation(a.group) == CollisionRelation.SOLID:
+                                    manifold = get_collision_manifold(a.collider, b.collider)
+                                    if manifold:
+                                        self._resolve_collision(a, b, manifold)
+                                    a.velocity = np.zeros(3, dtype=np.float32)  # stop push into wall
+                                    hit_solid = True
+                                break
+                        if hit_solid:
+                            # Revert to last safe (surface hit, no under-wall)
+                            a._position = np.copy(last_safe)
+                            a._mark_dirty()
+                            break
+                        last_safe = np.copy(a._position)
+                    # Extra resolve to unstick on high speed
+                    for b in all_objs:
+                        if b is a or b.group is None:
+                            continue
+                        rel = a.group.get_relation(b.group)
+                        if rel == CollisionRelation.IGNORE or b.group.get_relation(a.group) == CollisionRelation.IGNORE:
+                            continue
+                        if a.check_collision(b):
+                            if rel == CollisionRelation.SOLID or b.group.get_relation(a.group) == CollisionRelation.SOLID:
+                                current_collisions[a].add(b)
+                                current_collisions[b].add(a)
+                                manifold = get_collision_manifold(a.collider, b.collider)
+                                if manifold:
+                                    self._resolve_collision(a, b, manifold)
+            # Collect contacts for continuous objects (events)
+            if a.collision_mode == CollisionMode.CONTINUOUS:
+                for b in all_objs:
+                    if b is a or b.group is None:
+                        continue
+                    if (a.group.get_relation(b.group) == CollisionRelation.IGNORE or
+                        b.group.get_relation(a.group) == CollisionRelation.IGNORE):
+                        continue
+                    a._update_cache()
+                    b._update_cache()
+                    if a.check_collision(b):
+                        current_collisions[a].add(b)
+                        current_collisions[b].add(a)
+            # Normal/continuous snapshot for events (and any remaining SOLID)
             for b in all_objs:
                 if b is a:
                     continue
@@ -482,12 +552,12 @@ class Window3D:
                     rel_ba = b.group.get_relation(a.group)
                     is_solid = (rel_ab == CollisionRelation.SOLID or
                                 rel_ba == CollisionRelation.SOLID)
+                    current_collisions[a].add(b)
+                    current_collisions[b].add(a)
                     if is_solid:
                         manifold = get_collision_manifold(a.collider, b.collider)
                         if manifold:
                             self._resolve_collision(a, b, manifold)
-                    current_collisions[a].add(b)
-                    current_collisions[b].add(a)
         for obj in all_objs:
             prev = obj._current_collisions
             now = current_collisions.get(obj, set())
@@ -498,6 +568,9 @@ class Window3D:
             for other in prev - now:
                 obj.OnCollisionExit(other)
             obj._current_collisions = now.copy()
+        # Update prev for next frame (continuous uses it)
+        for obj in self._active_objects():
+            obj._update_prev_position()
 
     def _update_profiler(self, stats: dict):
         if not self.show_profiler:

@@ -15,7 +15,7 @@ sys.path.insert(0, project_root)
 
 from src.engine3d import Window3D, Keys, Color
 from src.engine3d.object3d import create_cube, create_plane, Object3D
-from src.physics import ColliderType, CollisionRelation, ObjectGroup
+from src.physics import ColliderType, CollisionMode, CollisionRelation, ObjectGroup
 
 
 # Player uses custom OnCollision* (set on instance for demo)
@@ -95,13 +95,15 @@ class CollisionGroupsExample(Window3D):
             self.ignores.append(ign)
         
         # Player (cube collider + mesh)
-        player_base = create_cube(1.0, color=Color.BLUE, collider_type=ColliderType.CUBE)
+        player_base = create_cube(1.0, color=Color.BLUE, collider_type=ColliderType.CUBE, collision_mode=CollisionMode.CONTINUOUS)
         self.player = self.add_object(player_base)
         self.player.scale = 1.0
         self.player.position = (0, 0.5, 0)
         self.player.group = self.player_group
         self.player.name = "Player"
-        self.player.move_speed = 10.0
+        self.player.move_speed = 100.0
+        self.player.collision_modes = [CollisionMode.NORMAL, CollisionMode.CONTINUOUS, CollisionMode.IGNORE]
+        self.player.mode_idx = 1
         # Attach callbacks
         make_player_callbacks(self.player)
         
@@ -143,8 +145,10 @@ class CollisionGroupsExample(Window3D):
         
         # Update caption
         pos = self.player.position
+        mode_str = str(self.player.collision_mode).split('.')[-1]
         self.set_caption(
             f"Groups Demo - Player: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) | "
+            f"Mode:{mode_str} Speed:{self.player.move_speed} | "
             f"Collisions: {self.collision_count} | "
             f"FPS: {self.fps:.0f}"
         )
@@ -154,6 +158,16 @@ class CollisionGroupsExample(Window3D):
             self.close()
         elif key == Keys.SPACE:
             self.show_colliders = not self.show_colliders
+        elif key == pygame.K_c:
+            # Cycle collision mode
+            self.player.mode_idx = (self.player.mode_idx + 1) % len(self.player.collision_modes)
+            self.player.collision_mode = self.player.collision_modes[self.player.mode_idx]
+        elif key == pygame.K_1:
+            self.player.move_speed = 10.0
+        elif key == pygame.K_2:
+            self.player.move_speed = 100.0
+        elif key == pygame.K_3:
+            self.player.move_speed = 1000.0
     
     def on_draw(self):
         # Draw colliders if enabled
@@ -170,6 +184,9 @@ class CollisionGroupsExample(Window3D):
                     else:
                         col = Color.WHITE
                     obj.draw_collider(self, col)
+        # Show mode/speed info
+        mode_str = str(self.player.collision_mode).split('.')[-1]
+        self.draw_text(f"Mode: {mode_str} | Speed: {self.player.move_speed}", 10, 10, Color.WHITE, 20)
         # Note: on_draw can add 2D UI if needed
 
 
@@ -177,6 +194,8 @@ if __name__ == "__main__":
     print("=== ObjectGroup Collision System Demo ===")
     print("Controls:")
     print("  WASD/Arrows - Move player")
+    print("  1/2/3 - Set speed (10/100/1000)")
+    print("  C - Cycle collision mode (test fast/ignore)")
     print("  SPACE - Toggle colliders")
     print("  ESC - Quit")
     print()

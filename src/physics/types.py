@@ -25,3 +25,9 @@ class CollisionRelation(IntEnum):
     IGNORE = 0
     TRIGGER = 1
     SOLID = 2
+
+
+class CollisionMode(IntEnum):
+    NORMAL = 0
+    CONTINUOUS = 1
+    IGNORE = 2
