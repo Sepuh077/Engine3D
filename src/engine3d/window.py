@@ -20,7 +20,7 @@ from .camera import Camera3D
 from .light import Light3D
 from .color import Color, ColorType
 from .keys import Keys
-from src.physics import ColliderType
+from src.physics import ColliderType, CollisionRelation, ObjectGroup
 
 try:
     import moderngl
@@ -411,6 +411,93 @@ class Window3D:
         Move an object by delta. Optionally check collisions and revert if needed.
         """
         return obj.move(*delta)
+
+    def _resolve_collision(self, a: Object3D, b: Object3D, manifold):
+        # Minimal depen + velocity project (slide, no jitter/vibrate on wall)
+        depth = getattr(manifold, 'depth', 0.0)
+        if depth <= 0:
+            return
+        push = depth + 1e-5
+        normal = manifold.normal
+        if a.static and b.static:
+            return
+        elif a.static:
+            b._position -= normal * push
+            # Project b vel: full stop if into, else slide
+            dot = np.dot(b.velocity, normal)
+            if dot < 0:
+                b.velocity = np.zeros(3, dtype=np.float32)  # stay still
+            else:
+                b.velocity -= dot * normal
+            b._mark_dirty()
+            b._update_cache()
+        elif b.static:
+            a._position += normal * push
+            # Project a vel: full stop if into, else slide
+            dot = np.dot(a.velocity, normal)
+            if dot < 0:
+                a.velocity = np.zeros(3, dtype=np.float32)  # stay still
+            else:
+                a.velocity -= dot * normal
+            a._mark_dirty()
+            a._update_cache()
+        else:
+            a._position += normal * (push / 2)
+            b._position -= normal * (push / 2)
+            # Project vels: full stop if pushing into, else slide
+            for obj in (a, b):
+                dot = np.dot(obj.velocity, normal)
+                if dot < 0:  # trying to move into wall
+                    obj.velocity = np.zeros(3, dtype=np.float32)  # stay still
+                else:
+                    obj.velocity -= dot * normal  # allow slide
+            a._mark_dirty()
+            b._mark_dirty()
+            a._update_cache()
+            b._update_cache()
+
+    def _process_collisions(self):
+        # Separate static/dynamic: only check dynamic-static + dynamic-dynamic
+        all_objs = [o for o in self._active_objects() if o.group is not None]
+        if not all_objs:
+            return
+
+        from collections import defaultdict
+        current_collisions = defaultdict(set)
+        from src.physics.collision import get_collision_manifold
+        # Check non-statics vs all (skip static a + self; covers dynamic-static + dynamic-dynamic)
+        for a in all_objs:
+            if a.static:
+                continue
+            for b in all_objs:
+                if b is a:
+                    continue
+                if (a.group.get_relation(b.group) == CollisionRelation.IGNORE or
+                    b.group.get_relation(a.group) == CollisionRelation.IGNORE):
+                    continue
+                a._update_cache()
+                b._update_cache()
+                if a.check_collision(b):
+                    rel_ab = a.group.get_relation(b.group)
+                    rel_ba = b.group.get_relation(a.group)
+                    is_solid = (rel_ab == CollisionRelation.SOLID or
+                                rel_ba == CollisionRelation.SOLID)
+                    if is_solid:
+                        manifold = get_collision_manifold(a.collider, b.collider)
+                        if manifold:
+                            self._resolve_collision(a, b, manifold)
+                    current_collisions[a].add(b)
+                    current_collisions[b].add(a)
+        for obj in all_objs:
+            prev = obj._current_collisions
+            now = current_collisions.get(obj, set())
+            for other in now - prev:
+                obj.OnCollisionEnter(other)
+            for other in now & prev:
+                obj.OnCollisionStay(other)
+            for other in prev - now:
+                obj.OnCollisionExit(other)
+            obj._current_collisions = now.copy()
 
     def _update_profiler(self, stats: dict):
         if not self.show_profiler:
@@ -1328,6 +1415,9 @@ class Window3D:
             if self._current_view:
                 self._current_view.on_update(self._delta_time)
             self.on_update(self._delta_time)
+            
+            # Auto collision detection + events + resolution (after user update)
+            self._process_collisions()
             
             # Render
             self._render()

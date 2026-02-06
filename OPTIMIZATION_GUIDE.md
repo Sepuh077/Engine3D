@@ -215,6 +215,14 @@ self.vertices = np.array(vertices, dtype=np.float32)
 | + Numba JIT | ~15 FPS |
 | + ModernGL (GPU) | ~200+ FPS |
 
+## Collision Detection Optimizations
+For faster collisions (current O(n²) pairwise + manifold calcs):
+
+- **Broadphase AABB first**: Added in `get_collision_manifold` (rejects separated boxes before sphere).
+- **Static/dynamic separation**: In `_process_collisions`, skip static-static pairs.
+- **Group filtering**: Early ignore checks per group lists.
+- **Further ideas**: Spatial hash/grid, numba@jit on manifolds, BVH for meshes, fixed timestep physics.
+
 ## Recommended Architecture
 
 For a production 3D engine in Python, use this stack:

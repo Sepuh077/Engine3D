@@ -4,7 +4,7 @@ import numpy as np
 import trimesh
 from typing import Tuple, Optional, List, TYPE_CHECKING
 
-from src.physics import ColliderType
+from src.physics import ColliderType, ObjectGroup
 from src.physics.collider import Collider
 from trimesh.visual.texture import TextureVisuals
 from .color import ColorType, Color
@@ -63,8 +63,9 @@ class Object3D:
         self._static = False
         self.name = "Object3D"
         self.tag = None
-        # List of objects that this object cannot pass through
-        self.impassable_objects: List['Object3D'] = []
+        self.group: Optional[ObjectGroup] = None
+        self._current_collisions: set = set()
+        self.velocity = np.zeros(3, dtype=np.float32)  # For slide/project on collision
 
         # GPU handles (initialized later)
         self._vbo = None
@@ -104,10 +105,8 @@ class Object3D:
             self._transform_dirty = True
 
     def _load_with_trimesh(self, filename: str):
-        # Use trimesh for all formats to properly extract colors/UVs
         loaded = trimesh.load(filename)
 
-        # Handle Scene (multiple geometries)
         if isinstance(loaded, trimesh.Scene):
             geometries = list(loaded.geometry.values())
             if not geometries:
@@ -116,10 +115,8 @@ class Object3D:
         else:
             mesh = loaded
 
-        # Set the trimesh object
         self.mesh = mesh
 
-        # Reset texture flags
         self._uses_texture = False
         self._texture_image = None
         self._uv = None
@@ -129,7 +126,7 @@ class Object3D:
 
         visual = mesh.visual
 
-        # Handle vertex colors if present (trimesh provides directly)
+        # Vertex colors path (unified normalize/pad)
         if (
             hasattr(visual, "vertex_colors")
             and visual.vertex_colors is not None
@@ -140,32 +137,30 @@ class Object3D:
                 colors /= 255.0
             if colors.shape[1] == 3:
                 colors = np.pad(colors, ((0, 0), (0, 1)), constant_values=1.0)
-            # Store in visual for later use (trimesh compatible)
             mesh.visual.vertex_colors = colors
             return
 
-        # Handle textured mesh (keep original logic for alpha/UV)
+        # Textured path
         if isinstance(visual, TextureVisuals):
             material = visual.material
             alpha_mode = getattr(material, "alphaMode", "OPAQUE")
             if alpha_mode != "OPAQUE":
                 self._uses_texture = True
-                # Ensure numpy RGBA array (float 0-1) for moderngl texture upload
                 raw_img = (
                     getattr(material, "baseColorTexture", None)
                     or getattr(material, "image", None)
                 )
                 img_arr = np.asarray(raw_img)
-                if img_arr.ndim == 2:  # grayscale -> RGB
+                if img_arr.ndim == 2:
                     img_arr = np.stack([img_arr] * 3, axis=2)
                 img_arr = img_arr.astype(np.float32) / 255.0
-                if img_arr.shape[2] == 3:  # RGB -> RGBA opaque
+                if img_arr.shape[2] == 3:
                     img_arr = np.pad(img_arr, ((0, 0), (0, 0), (0, 1)), constant_values=1.0)
                 self._texture_image = img_arr
                 self._uv = visual.uv
                 return
 
-            # Approximate texture to vertex colors if no alpha
+            # Texture-to-vertex-colors fallback (simplified sampling)
             img = (
                 getattr(material, "baseColorTexture", None)
                 or getattr(material, "image", None)
@@ -214,11 +209,10 @@ class Object3D:
             else:
                 return
 
-            # Set as vertex colors in trimesh visual
             mesh.visual.vertex_colors = v_colors
             return
 
-        # Fallback material color for simple meshes (e.g. OBJ)
+        # Simple material fallback
         material = getattr(visual, 'material', None)
         if material is not None:
             base = getattr(material, 'baseColor', None) or getattr(material, 'diffuse', [1.0, 1.0, 1.0, 1.0])
@@ -269,8 +263,8 @@ class Object3D:
     
     @x.setter
     def x(self, value: float):
-        self._position[0] = value
-        self._mark_dirty()
+        """Set x (substeps via position if large)."""
+        self.position = (value, self.y, self.z)
     
     @property
     def y(self) -> float:
@@ -278,8 +272,8 @@ class Object3D:
     
     @y.setter
     def y(self, value: float):
-        self._position[1] = value
-        self._mark_dirty()
+        """Set y (substeps via position if large)."""
+        self.position = (self.x, value, self.z)
     
     @property
     def z(self) -> float:
@@ -287,8 +281,8 @@ class Object3D:
     
     @z.setter
     def z(self, value: float):
-        self._position[2] = value
-        self._mark_dirty()
+        """Set z (substeps via position if large)."""
+        self.position = (self.x, self.y, value)
 
     # ---------------- Bounds ----------------
     @property
@@ -352,68 +346,15 @@ class Object3D:
         self.z += value - self.max_z
     
     def move(self, dx: float = 0, dy: float = 0, dz: float = 0) -> bool:
-        """
-        Move object by offset with iterative physics response.
-        Handles sliding against multiple surfaces (e.g. wall + floor).
-        """
-        original_pos = self._position.copy()
+        # Substep for high-speed to prevent tunneling (e.g. bullet vs thin wall)
         delta = np.array([dx, dy, dz], dtype=np.float32)
-        
-        # Iterative solver to resolve multiple constraints (e.g. Floor + Wall)
-        for _ in range(5):
-            # 1. Try moving with current delta
-            target_pos = original_pos + delta
-            self._position = target_pos
+        speed = np.linalg.norm(delta)
+        steps = max(1, int(speed / 0.5))  # substep if >0.5 units/frame
+        step = delta / steps
+        for _ in range(steps):
+            self._position += step
             self._mark_dirty()
-            
-            # 2. Check for BLOCKING collisions
-            blocking_manifold = None
-            
-            self._update_cache()
-            for obj in self.impassable_objects:
-                if obj is self:
-                    continue
-                obj._update_cache()
-                
-                from src.physics.collision import get_collision_manifold
-                manifold = get_collision_manifold(self.collider, obj.collider)
-                
-                if manifold:
-                    # Check if this is a blocking collision
-                    # Normal points B(Obstacle) -> A(Self)
-                    dot_prod = np.dot(delta, manifold.normal)
-                    
-                    if dot_prod < -1e-5:
-                        # Moving INTO the object. This is a blocker.
-                        blocking_manifold = manifold
-                        break
-            
-            if blocking_manifold is None:
-                return True
-            
-            # 3. Handle Blocker
-            # Revert + tiny de-penetrate along normal (fixes sphere-sphere sticking; no jitter)
-            self._position = original_pos
-            self._mark_dirty()
-            depth = getattr(blocking_manifold, 'depth', 0.0)
-            if depth > 0:
-                # Fixed small push (prevents re-collision in retry without visible jitter)
-                push = 0.001 * blocking_manifold.normal
-                self._position += push
-                self._mark_dirty()
-            
-            # Calculate slide vector
-            normal = blocking_manifold.normal
-            d = np.dot(delta, normal)
-            
-            # Remove velocity component into the wall
-            delta = delta - d * normal
-            
-            # Continue with projected delta (even tiny; avoids premature stop on glancing sphere-sphere)
-            # The loop limit prevents infinite if stuck
-
-        self._position = original_pos
-        self._mark_dirty()
+        self.velocity = delta  # instant velocity for slide/project
         return True
 
     # =========================================================================
@@ -815,7 +756,15 @@ class Object3D:
         from src.physics.collision import collide_point_with_radius
         return collide_point_with_radius(np.array(point, dtype=np.float32), self.collider, radius)
 
-    
+    def OnCollisionEnter(self, other: 'Object3D'):
+        pass
+
+    def OnCollisionExit(self, other: 'Object3D'):
+        pass
+
+    def OnCollisionStay(self, other: 'Object3D'):
+        pass
+
     def __repr__(self):
         return f"Object3D(name='{hash(self)}', position={self.position}, scale={self.scale})"
 

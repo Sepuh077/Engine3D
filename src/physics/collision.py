@@ -3,7 +3,8 @@ from typing import Optional, Tuple
 from dataclasses import dataclass
 
 from src.physics.collider import Collider
-from src.physics import ColliderType
+from .types import ColliderType
+
 
 @dataclass
 class CollisionManifold:
@@ -432,8 +433,17 @@ def cylinder_vs_mesh_manifold(cyl: Collider, mesh: Collider) -> Optional[Collisi
     # This is what get_world_sphere() returns for Cylinder.
     return sphere_vs_mesh_manifold(cyl, mesh)
 
+def aabb_overlap(a: Collider, b: Collider) -> bool:
+    # Fast AABB broadphase (cheaper reject than sphere for boxes)
+    amin, amax = a.get_world_aabb()
+    bmin, bmax = b.get_world_aabb()
+    return not (amax[0] < bmin[0] or amax[1] < bmin[1] or amax[2] < bmin[2] or
+                amin[0] > bmax[0] or amin[1] > bmax[1] or amin[2] > bmax[2])
+
 def get_collision_manifold(a: Collider, b: Collider) -> Optional[CollisionManifold]:
-    # Broad phase using bounding spheres
+    # Broad phase: AABB then sphere (faster rejects)
+    if not aabb_overlap(a, b):
+        return None
     if not sphere_vs_sphere_manifold(a, b): 
         return None
         

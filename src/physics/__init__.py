@@ -1,6 +1,9 @@
-from .types import ColliderType
+from .types import ColliderType, CollisionRelation
+from .group import ObjectGroup
 
 
 __all__ = [
-    "ColliderType"
+    "ColliderType",
+    "CollisionRelation",
+    "ObjectGroup"
 ]
