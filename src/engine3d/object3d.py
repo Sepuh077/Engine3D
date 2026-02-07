@@ -250,9 +250,9 @@ class Object3D:
         self._mesh_key = None
     
     @property
-    def position(self) -> Tuple[float, float, float]:
+    def position(self) -> np.ndarray:
         """Get position as tuple."""
-        return tuple(self._position)
+        return self._position.copy()
     
     @position.setter
     def position(self, value: Tuple[float, float, float]):
