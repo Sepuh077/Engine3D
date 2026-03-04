@@ -8,7 +8,7 @@ from .gameobject import GameObject
 from .object3d import Object3D
 from .camera import Camera3D
 from .light import Light3D
-from .color import Color, ColorType
+from .graphics.color import Color, ColorType
 
 if TYPE_CHECKING:
     from .window import Window3D

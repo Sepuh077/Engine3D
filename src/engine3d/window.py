@@ -19,9 +19,10 @@ from .gameobject import GameObject
 from .object3d import Object3D
 from .camera import Camera3D
 from .light import Light3D
-from .color import Color, ColorType
+from .graphics.color import Color, ColorType
+from .input.keys import Keys
 from src.physics import ColliderType, CollisionMode, CollisionRelation, Collider
-from src.engine3d.component import Rigidbody
+from src.physics.rigidbody import Rigidbody
 
 try:
     import moderngl
@@ -438,7 +439,7 @@ class Window3D:
         if a_static and b_static:
             return
         elif a_static:
-            b.transform._position -= normal * push
+            b.transform._local_position -= normal * push
             # Project b vel: full stop if into, else slide
             if b.get_component(Rigidbody):
                 dot = np.dot(b.get_component(Rigidbody).velocity, normal)
@@ -449,7 +450,7 @@ class Window3D:
             for c in b.get_components(Collider):
                 c.update_bounds()
         elif b_static:
-            a.transform._position += normal * push
+            a.transform._local_position += normal * push
             # Project a vel: full stop if into, else slide
             if a.get_component(Rigidbody):
                 dot = np.dot(a.get_component(Rigidbody).velocity, normal)
@@ -459,8 +460,8 @@ class Window3D:
             for c in a.get_components(Collider):
                 c.update_bounds()
         else:
-            a.transform._position += normal * (push / 2)
-            b.transform._position -= normal * (push / 2)
+            a.transform._local_position += normal * (push / 2)
+            b.transform._local_position -= normal * (push / 2)
             # Project vels: full stop if pushing into, else slide
             for obj in (a, b):
                 if not obj.get_component(Rigidbody):
@@ -498,17 +499,17 @@ class Window3D:
             # Continuous sweep (per obj of collider)
             a = ca.game_object
             if ca.collision_mode == CollisionMode.CONTINUOUS:
-                delta = a.transform._position - a.transform._prev_position
+                delta = a.transform._local_position - a.transform._prev_position
                 speed = np.linalg.norm(delta)
                 if speed > 1e-6:
-                    a.transform._position = np.copy(a.transform._prev_position)
+                    a.transform._local_position = np.copy(a.transform._prev_position)
                     a.transform._mark_dirty()
                     steps = max(1, int(speed / 0.1))
                     step = delta / steps
-                    last_safe = np.copy(a.transform._position)
+                    last_safe = np.copy(a.transform._local_position)
                     
                     for _ in range(steps):
-                        a.transform._position += step
+                        a.transform._local_position += step
                         a.transform._mark_dirty()
                         hit_solid = False
                         for cb in all_cols:
@@ -531,10 +532,10 @@ class Window3D:
                                     hit_solid = True
                                     break
                         if hit_solid:
-                            a.transform._position = np.copy(last_safe)
+                            a.transform._local_position = np.copy(last_safe)
                             a.transform._mark_dirty()
                             break
-                        last_safe = np.copy(a.transform._position)
+                        last_safe = np.copy(a.transform._local_position)
                     else:
                         perform_final_check = False
             

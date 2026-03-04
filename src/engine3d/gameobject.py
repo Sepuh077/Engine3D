@@ -1,7 +1,8 @@
 from typing import List, Optional, Type, TypeVar
 import numpy as np
 
-from .component import Component, Transform
+from .component import Component
+from .transform import Transform
 
 T = TypeVar('T', bound=Component)
 

@@ -24,12 +24,14 @@ Example:
 from .window import Window3D
 from .view import View3D
 from .gameobject import GameObject
-from .component import Component, Transform, Rigidbody
+from .component import Component
+from .transform import Transform
+from src.physics.rigidbody import Rigidbody
 from .object3d import Object3D, create_cube, create_sphere, create_plane
 from .camera import Camera3D
 from .light import Light3D
-from .keys import Keys
-from .color import Color
+from .input.keys import Keys
+from .graphics.color import Color
 from .particle import (
     ParticleSystem,
     ParticleBurst,

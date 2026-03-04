@@ -10,7 +10,7 @@ import random
 import numpy as np
 
 from src.physics import BoxCollider, SphereCollider, CollisionMode, Collider
-from .color import ColorType
+from .graphics.color import ColorType
 from .gameobject import GameObject
 from .object3d import create_cube, Object3D
 from .component import Component
@@ -37,6 +37,7 @@ class Particle:
     def __init__(self, obj: GameObject):
         self.obj = obj
         self.velocity = np.zeros(3, dtype=np.float32)
+        self.local_position = np.zeros(3, dtype=np.float32)
         self.life = 1.0
         self.age = 0.0
         self.active = False
@@ -205,10 +206,12 @@ class ParticleSystem(Component):
         gravity_scale: float = 1.0,
         collider: Optional[Collider] = None,
         shape: Optional[ParticleShape] = None,
+        is_local: bool = True,
     ):
         super().__init__()
         self._position = np.array(position, dtype=np.float32)
         self.play_on_awake = play_on_awake
+        self.is_local = bool(is_local)
         self.play_duration = float(play_duration)
         self.particle_life = float(particle_life)
         self.speed = float(speed)
@@ -383,11 +386,19 @@ class ParticleSystem(Component):
                 else:
                     particle.velocity = np.array(vel_value, dtype=np.float32)
 
-            new_pos = particle.obj.transform.position + particle.velocity * delta_time
-            if self.collider is not None:
-                self._move_with_collisions(particle, new_pos)
+            if self.is_local and self.game_object:
+                particle.local_position += particle.velocity * delta_time
+                new_world_pos = self.game_object.transform.world_position + particle.local_position
+                if self.collider is not None:
+                    self._move_with_collisions(particle, new_world_pos)
+                else:
+                    particle.obj.transform.world_position = new_world_pos
             else:
-                particle.obj.transform.position = new_pos
+                new_pos = particle.obj.transform.position + particle.velocity * delta_time
+                if self.collider is not None:
+                    self._move_with_collisions(particle, new_pos)
+                else:
+                    particle.obj.transform.position = new_pos
 
             if self.size_over_lifetime is not None:
                 particle.obj.transform.scale = float(self.size_over_lifetime(life_ratio))
@@ -409,7 +420,16 @@ class ParticleSystem(Component):
         particle.velocity = spawn_dir * self.speed
 
         particle.obj.get_component(Object3D).visible = True
-        particle.obj.transform.position = spawn_pos
+        if self.is_local and self.game_object:
+            particle.local_position = spawn_pos
+            particle.obj.transform.parent = self.game_object.transform
+            particle.obj.transform.position = spawn_pos
+        else:
+            world_spawn = spawn_pos
+            if self.game_object is not None:
+                world_spawn = self.game_object.transform.world_position + spawn_pos
+            particle.obj.transform.parent = None
+            particle.obj.transform.position = world_spawn
         particle.obj.transform.scale = self.size
         if self.color is not None:
             particle.obj.get_component(Object3D).color = self.color
@@ -438,11 +458,11 @@ class ParticleSystem(Component):
         obj = particle.obj
         colliders = obj.get_components(Collider)
         if not colliders:
-            obj.transform.position = target_pos
+            obj.transform.world_position = target_pos
             return
 
         collider = colliders[0]
-        obj.transform.position = target_pos
+        obj.transform.world_position = target_pos
 
         if collider.collision_mode == CollisionMode.IGNORE:
             return

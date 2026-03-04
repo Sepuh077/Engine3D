@@ -4,10 +4,10 @@ import numpy as np
 import trimesh
 from typing import Tuple, Optional, List, TYPE_CHECKING
 
-from src.engine3d.component import Component
+from .component import Component
 from src.engine3d.gameobject import GameObject
 from trimesh.visual.texture import TextureVisuals
-from .color import ColorType
+from .graphics.color import ColorType
 
 if TYPE_CHECKING:
     import moderngl

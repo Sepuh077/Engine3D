@@ -3,7 +3,7 @@ Light3D - Lighting for 3D scenes.
 """
 import numpy as np
 from typing import Tuple
-from .color import ColorType
+from .graphics.color import ColorType
 
 
 class Light3D:
