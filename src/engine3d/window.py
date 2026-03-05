@@ -23,6 +23,7 @@ from .graphics.color import Color, ColorType
 from .input.keys import Keys
 from src.physics import ColliderType, CollisionMode, CollisionRelation, Collider
 from src.physics.rigidbody import Rigidbody
+from .component import Script, Time
 
 try:
     import moderngl
@@ -69,8 +70,8 @@ class Window3D:
                 self.cube = self.load_object("cube.obj")
                 self.cube.position = (0, 0, 0)
                 
-            def on_update(self, delta_time):
-                self.cube.rotation_y += delta_time * 30
+            def on_update(self):
+                self.cube.rotation_y += Time.delta_time * 30
                 
             def on_key_press(self, key, modifiers):
                 if key == Keys.ESCAPE:
@@ -316,6 +317,7 @@ class Window3D:
         self._running = False
         self._fps = 60
         self._delta_time = 0.0
+        Time.delta_time = 0.0
         
         # Input state
         self._keys_pressed = set()
@@ -386,6 +388,9 @@ class Window3D:
         if obj3d_comp:
             self._ensure_mesh(obj3d_comp)
         self.objects.append(go)
+        
+        # Start scripts on the new object
+        go.start_scripts()
         
         return go
 
@@ -565,10 +570,22 @@ class Window3D:
             now = current_collisions.get(c, set())
             for oc in now - prev:
                 c.OnCollisionEnter(oc)
+                # Propagate to scripts on the same game object
+                if c.game_object:
+                    for script in c.game_object.get_components(Script):
+                        script.on_collision_enter(oc)
             for oc in now & prev:
                 c.OnCollisionStay(oc)
+                # Propagate to scripts on the same game object
+                if c.game_object:
+                    for script in c.game_object.get_components(Script):
+                        script.on_collision_stay(oc)
             for oc in prev - now:
                 c.OnCollisionExit(oc)
+                # Propagate to scripts on the same game object
+                if c.game_object:
+                    for script in c.game_object.get_components(Script):
+                        script.on_collision_exit(oc)
             c._current_collisions = now.copy()
             
         # Update prev for next frame (continuous uses it)
@@ -823,7 +840,7 @@ class Window3D:
     
     @property
     def delta_time(self) -> float:
-        """Time since last frame in seconds."""
+        """Unscaled time since last frame in seconds."""
         return self._delta_time
     
     @property
@@ -876,12 +893,9 @@ class Window3D:
         """
         pass
     
-    def on_update(self, delta_time: float):
+    def on_update(self):
         """
         Called every frame to update the scene.
-        
-        Args:
-            delta_time: Time since last frame in seconds
         """
         pass
     
@@ -1479,26 +1493,34 @@ class Window3D:
             self.setup()
             self._setup_done = True
 
-        print(self.objects.__len__())
+        # Start scripts on all objects after setup
+        for obj in self._active_objects():
+            obj.start_scripts()
         
         # Main loop
         while self._running:
             # Calculate delta time
-            self._delta_time = self._clock.tick(fps) / 1000.0
+            raw_dt = self._clock.tick(fps) / 1000.0
+            self._delta_time = raw_dt
+            Time.delta_time = raw_dt * Time.scale
             
             # Handle events
             self._handle_events()
             
             # Update
             if self._current_view:
-                self._current_view.on_update(self._delta_time)
-            self.on_update(self._delta_time)
+                self._current_view.on_update()
+            self.on_update()
 
             for obj in self._active_objects():
-                obj.update(self._delta_time)
+                obj.update()
 
             # Auto collision detection + events + resolution (after user update)            
             self._process_collisions()
+            
+            # End-of-frame coroutine phase
+            for obj in self._active_objects():
+                obj.update_end_of_frame()
             
             # Render
             self._render()

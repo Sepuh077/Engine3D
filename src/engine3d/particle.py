@@ -13,7 +13,7 @@ from src.physics import BoxCollider, SphereCollider, CollisionMode, Collider
 from .graphics.color import ColorType
 from .gameobject import GameObject
 from .object3d import create_cube, Object3D
-from .component import Component
+from .component import Component, Time
 
 
 ParticleObject = Union[str, GameObject, Callable[[], GameObject]]
@@ -336,6 +336,14 @@ class ParticleSystem(Component):
                 if particle.active:
                     self._deactivate(particle)
 
+    def destroy(self) -> None:
+        """Remove all particle objects from the scene and clear the pool."""
+        self._playing = False
+        if self._container is not None:
+            for particle in self._particles:
+                self._container.remove_object(particle.obj)
+        self._particles = []
+
     def emit(self, count: int) -> None:
         if count <= 0:
             return
@@ -345,7 +353,8 @@ class ParticleSystem(Component):
                 break
             self._activate(particle)
 
-    def update(self, delta_time: float) -> None:
+    def update(self) -> None:
+        delta_time = Time.delta_time
         if self._playing:
             if self.play_duration > 0:
                 self._elapsed += delta_time

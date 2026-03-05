@@ -21,7 +21,7 @@ pip install pygame moderngl numpy
 ## Quick Start
 
 ```python
-from src.engine3d import Window3D, Keys, Color
+from src.engine3d import Window3D, Keys, Color, Time
 
 class MyGame(Window3D):
     def setup(self):
@@ -34,9 +34,9 @@ class MyGame(Window3D):
         self.camera.position = (0, 5, 10)
         self.camera.look_at((0, 0, 0))
     
-    def on_update(self, delta_time):
+    def on_update(self):
         # Rotate the cube
-        self.cube.rotation_y += 30 * delta_time
+        self.cube.rotation_y += 30 * Time.delta_time
     
     def on_key_press(self, key, modifiers):
         if key == Keys.ESCAPE:
@@ -50,14 +50,15 @@ MyGame(800, 600, "My 3D Game").run()
 
 ### Basic Example
 ```python
-from src.engine3d import Window3D, Object3D, Keys, Color
+from src.engine3d import Window3D, Object3D, Keys, Color, Time
 
 class BasicGame(Window3D):
     def setup(self):
         self.obj = self.load_object("example/stairs_modular_right.obj")
         self.camera.position = (0, 5, 15)
     
-    def on_update(self, delta_time):
+    def on_update(self):
+        delta_time = Time.delta_time
         self.obj.rotation_y += 30 * delta_time
         
         # Camera controls
@@ -86,16 +87,16 @@ class ManyObjects(Window3D):
         self.camera.position = (15, 20, 40)
         self.camera.look_at((15, 0, 15))
     
-    def on_update(self, dt):
+    def on_update(self):
         for obj in self.objects:
-            obj.rotation_y += 30 * dt
+            obj.rotation_y += 30 * Time.delta_time
 
 ManyObjects(800, 600, "100 Objects Demo").run()
 ```
 
 ### Using Views for Scenes
 ```python
-from src.engine3d import Window3D, View3D, Keys
+from src.engine3d import Window3D, View3D, Keys, Time
 
 class MenuView(View3D):
     def setup(self):
@@ -110,9 +111,9 @@ class GameView(View3D):
     def setup(self):
         self.player = self.load_object("player.obj")
     
-    def on_update(self, dt):
+    def on_update(self):
         if self.window.is_key_pressed(Keys.W):
-            self.player.z -= 5 * dt
+            self.player.z -= 5 * Time.delta_time
     
     def on_key_press(self, key, mods):
         if key == Keys.ESCAPE:
@@ -143,7 +144,7 @@ class Window3D:
     
     # Methods
     def setup(self)                              # Override: called once at start
-    def on_update(self, delta_time: float)       # Override: called every frame
+    def on_update(self)                          # Override: called every frame
     def on_draw(self)                            # Override: custom drawing
     def on_key_press(self, key, modifiers)       # Override: key pressed
     def on_key_release(self, key, modifiers)     # Override: key released

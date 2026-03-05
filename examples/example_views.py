@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, View3D, Object3D, Keys, Color
+from src.engine3d import Window3D, View3D, Object3D, Keys, Color, Time
 from src.engine3d.object3d import create_cube
 
 
@@ -29,7 +29,8 @@ class MenuView(View3D):
         
         self.time = 0
     
-    def on_update(self, delta_time):
+    def on_update(self):
+        delta_time = Time.delta_time
         self.time += delta_time
         # Gentle rotation
         self.title_cube.transform.rotation_y = self.time * 20
@@ -75,10 +76,11 @@ class GameView(View3D):
         self.paused = False
         self.score = 0
     
-    def on_update(self, delta_time):
+    def on_update(self):
         if self.paused:
             return
         
+        delta_time = Time.delta_time
         # Player movement
         speed = 5 * delta_time
         

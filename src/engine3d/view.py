@@ -9,6 +9,7 @@ from .object3d import Object3D
 from .camera import Camera3D
 from .light import Light3D
 from .graphics.color import Color, ColorType
+from .component import Time
 
 if TYPE_CHECKING:
     from .window import Window3D
@@ -25,8 +26,8 @@ class View3D:
             def setup(self):
                 self.player = self.add_object("player.obj")
                 
-            def on_update(self, delta_time):
-                self.player.rotation_y += delta_time * 30
+            def on_update(self):
+                self.player.rotation_y += Time.delta_time * 30
                 
             def on_key_press(self, key, modifiers):
                 if key == Keys.ESCAPE:
@@ -90,6 +91,9 @@ class View3D:
             if obj3d_comp:
                 self.window._ensure_mesh(obj3d_comp)
         
+        # Start scripts on the new object
+        go.start_scripts()
+        
         return go
     
     def remove_object(self, obj: GameObject):
@@ -149,12 +153,9 @@ class View3D:
         """
         pass
     
-    def on_update(self, delta_time: float):
+    def on_update(self):
         """
         Called every frame to update the scene.
-        
-        Args:
-            delta_time: Time since last frame in seconds
         """
         pass
     

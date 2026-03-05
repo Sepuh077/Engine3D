@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, GameObject, Keys, Color, ParticleSystem, ParticleBurst
+from src.engine3d import Window3D, GameObject, Keys, Color, ParticleSystem, ParticleBurst, Time
 
 
 class BasicExample(Window3D):
@@ -59,8 +59,9 @@ class BasicExample(Window3D):
         ps_go.add_component(self.particles)
         self.add_object(ps_go)
     
-    def on_update(self, delta_time):
+    def on_update(self):
         """Called every frame."""
+        delta_time = Time.delta_time
         # Rotate the object
         self.stairs.transform.rotation_y += self.rotation_speed * delta_time
         

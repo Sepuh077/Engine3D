@@ -10,7 +10,7 @@ from src.engine3d import (
     Rigidbody,
     GameObject,
     Window3D, 
-    Keys, 
+    Object3D, 
     Color, 
     ParticleSystem, 
     ParticleBurst, 
@@ -25,6 +25,7 @@ from src.engine3d import (
     SphereShape,
     ConeShape,
     BoxShape,
+    Time,
 )
 from src.physics import BoxCollider, SphereCollider, CollisionMode
 
@@ -110,7 +111,12 @@ class ParticleExample(Window3D):
         self.rebuild_ps()
 
     def set_obj_sphere(self):
-        self.ps.particle_object = lambda: create_sphere(radius=0.5)
+        def set_obj(filename="Example/stairs_modular_right.obj"):
+            obj = Object3D(filename)
+            go = GameObject()
+            go.add_component(obj)
+            return go
+        self.ps.particle_object = lambda: set_obj()
         self.rebuild_ps()
 
     def set_grav_neg(self): self.ps.gravity_scale = -1.0
@@ -188,10 +194,7 @@ class ParticleExample(Window3D):
     def rebuild_ps(self):
         # We need to recreate the pool
         old_ps = self.ps
-        # Clear objects from old system
-        for p in old_ps._particles:
-            self.remove_object(p.obj)
-            
+        old_ps.destroy()
         self.remove_object(self.ps_go)
 
         self.ps = ParticleSystem(
@@ -215,7 +218,7 @@ class ParticleExample(Window3D):
         self.ps_go.add_component(self.ps)
         self.add_object(self.ps_go)
 
-    def on_update(self, dt):
+    def on_update(self):
         self.set_caption(f"Particle Test - {self.fps:.1f} FPS - Particles: {sum(1 for p in self.ps._particles if p.active)}")
 
     def on_draw(self):

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, Keys, Color
+from src.engine3d import Window3D, Keys, Color, Time
 
 
 class ManyObjectsExample(Window3D):
@@ -63,8 +63,9 @@ class ManyObjectsExample(Window3D):
         self.offset_x = 0.0
         self.offset_z = 0.0
     
-    def on_update(self, delta_time):
+    def on_update(self):
         """Animate all objects."""
+        delta_time = Time.delta_time
         self.time += delta_time
         
         # Movement speed

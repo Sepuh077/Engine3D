@@ -14,7 +14,7 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
-from src.engine3d import Rigidbody, Window3D, Keys, Color
+from src.engine3d import Rigidbody, Window3D, Keys, Color, Time
 from src.engine3d.object3d import create_cube, create_plane
 from src.physics import BoxCollider, SphereCollider, Collider
 
@@ -76,8 +76,9 @@ class CollisionExample(Window3D):
         # Movement state
         self.move_dir = [0, 0, 0]  # x, y, z
 
-    def on_update(self, delta_time):
+    def on_update(self):
         """Called every frame."""
+        delta_time = Time.delta_time
         # Move enemies in circles
         if not hasattr(self, 'time_elapsed'):
             self.time_elapsed = 0.0

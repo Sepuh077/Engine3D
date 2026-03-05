@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 import random
 
-from src.engine3d import Rigidbody, Window3D, Keys, Color
+from src.engine3d import Rigidbody, Window3D, Keys, Color, Time
 from src.engine3d.object3d import create_cube, create_plane
 from src.physics import BoxCollider, SphereCollider, CapsuleCollider, Collider
 
@@ -79,7 +79,8 @@ class FPSCameraExample(Window3D):
         self.yaw = 0
         self.pitch = 0
     
-    def on_update(self, delta_time):        
+    def on_update(self):        
+        delta_time = Time.delta_time
         # Movement
         speed = self.move_speed * delta_time
         

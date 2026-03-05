@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.engine3d.component import Component
+from src.engine3d.component import Component, Time
 
 
 class Rigidbody(Component):
@@ -18,10 +18,11 @@ class Rigidbody(Component):
         """Simple force application."""
         self.velocity += np.array(force, dtype=np.float32) / self.mass
 
-    def update(self, delta_time: float):
+    def update(self):
         if self.is_static or self.is_kinematic:
             return
 
+        delta_time = Time.delta_time
         if self.use_gravity:
             # Simple gravity: 9.81 m/s^2 downwards
             self.velocity[1] -= 9.81 * delta_time

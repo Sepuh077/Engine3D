@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, GameObject, Keys, Color, ParticleSystem
+from src.engine3d import Window3D, GameObject, Keys, Color, ParticleSystem, Time
 from src.engine3d.object3d import create_cube, create_sphere
 
 
@@ -71,8 +71,9 @@ class HierarchyExample(Window3D):
         # For display
         self.show_info = True
     
-    def on_update(self, delta_time):
+    def on_update(self):
         """Called every frame."""
+        delta_time = Time.delta_time
         # Auto-rotate parent if enabled
         if self.auto_rotate:
             self.parent_obj.transform.rotation_y += self.rotation_speed * delta_time * 0.5

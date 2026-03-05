@@ -11,8 +11,8 @@ Example:
             self.player = self.load_object("player.obj")
             self.player.position = (0, 0, 0)
         
-        def on_update(self, delta_time):
-            self.player.rotation_y += delta_time
+        def on_update(self):
+            self.player.rotation_y += Time.delta_time
         
         def on_key_press(self, key, modifiers):
             if key == Keys.ESCAPE:
@@ -24,7 +24,7 @@ Example:
 from .window import Window3D
 from .view import View3D
 from .gameobject import GameObject
-from .component import Component
+from .component import Component, Script, WaitForSeconds, WaitEndOfFrame, Time
 from .transform import Transform
 from src.physics.rigidbody import Rigidbody
 from .object3d import Object3D, create_cube, create_sphere, create_plane
@@ -60,6 +60,10 @@ __all__ = [
     'View3D', 
     'GameObject',
     'Component',
+    'Script',
+    'WaitForSeconds',
+    'WaitEndOfFrame',
+    'Time',
     'Transform',
     'Rigidbody',
     'Object3D',

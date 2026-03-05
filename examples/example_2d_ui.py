@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 # Demo Arcade-style globals for 2D drawing + get_window
 from src.engine3d import (
     Rigidbody, 
-    Window3D, Keys, Color, Object3D,
+    Window3D, Keys, Color, Object3D, Time,
     draw_text, draw_rectangle, draw_circle, draw_ellipse,
     draw_polygon, draw_line, draw_image, get_window,
 )
@@ -68,11 +68,12 @@ class UIExample(Window3D):
         img_array[:, :, 3] = 200  # semi-transparent
         self.random_img = pygame.surfarray.make_surface(img_array[:, :, :3]).convert_alpha()
 
-    def on_update(self, delta_time):
+    def on_update(self):
         """Update 3D and UI state."""
         if self.game_over:
             return
 
+        delta_time = Time.delta_time
         self.time += delta_time
         speed = 10.0 * delta_time
 

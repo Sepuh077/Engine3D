@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, Keys, Color
+from src.engine3d import Window3D, Keys, Color, Time
 from src.engine3d.object3d import create_cube, create_plane
 from src.physics import BoxCollider, SphereCollider, CapsuleCollider, Collider
 
@@ -92,7 +92,8 @@ class FPSCameraExample(Window3D):
         # 🔴 THIS is the missing part
         self.camera.look_at(self.camera_obj.position)
     
-    def on_update(self, delta_time):        
+    def on_update(self):        
+        delta_time = Time.delta_time
         # Movement
         speed = self.move_speed * delta_time
         yaw = self.camera_obj.rotation_y

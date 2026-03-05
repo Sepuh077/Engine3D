@@ -13,7 +13,7 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
-from src.engine3d import Rigidbody, Window3D, Keys, Color, Component, GameObject
+from src.engine3d import Rigidbody, Window3D, Keys, Color, Component, GameObject, Time
 from src.engine3d.object3d import create_cube, create_plane, Object3D
 from src.physics import CollisionMode, CollisionRelation, BoxCollider, SphereCollider, CapsuleCollider, Collider, ColliderGroup
 
@@ -137,7 +137,8 @@ class CollisionGroupsExample(Window3D):
         self.show_colliders = True
         self.collision_count = 0
     
-    def on_update(self, delta_time):
+    def on_update(self):
+        delta_time = Time.delta_time
         # Player movement with WASD + arrows for Y
         dx = dy = dz = 0.0
         speed = self.player.move_speed * delta_time
