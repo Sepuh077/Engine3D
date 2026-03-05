@@ -9,11 +9,31 @@ from .component import Component
 
 class Light3D(Component):
     """
+    Base class for all lights.
+    """
+    
+    def __init__(self, 
+                 color: ColorType = (1.0, 1.0, 1.0),
+                 intensity: float = 1.0):
+        """
+        Initialize base light.
+        
+        Args:
+            color: Light color (RGB 0-1)
+            intensity: Light intensity multiplier
+        """
+        super().__init__()
+        self.color = color
+        self.intensity = intensity
+
+
+class DirectionalLight3D(Light3D):
+    """
     Directional light for 3D scenes.
     
     Example:
         light_go = GameObject("Light")
-        light = Light3D(color=Color.WHITE)
+        light = DirectionalLight3D(color=Color.WHITE)
         light_go.add_component(light)
         # set direction by rotating the GameObject
         light_go.transform.rotation = (-45, 30, 0)
@@ -24,19 +44,17 @@ class Light3D(Component):
                  intensity: float = 1.0,
                  ambient: float = 0.2):
         """
-        Initialize light.
+        Initialize directional light.
         
         Args:
             color: Light color (RGB 0-1)
             intensity: Light intensity multiplier
             ambient: Ambient light level (0-1)
         """
-        super().__init__()
+        super().__init__(color, intensity)
         self._fallback_direction = np.array([0.3, -0.7, -0.5], dtype=np.float32)
         self._normalize_fallback_direction()
         
-        self.color = color
-        self.intensity = intensity
         self.ambient = ambient
     
     def _normalize_fallback_direction(self):
@@ -78,10 +96,9 @@ class Light3D(Component):
         self._normalize_fallback_direction()
 
 
-class PointLight3D(Component):
+class PointLight3D(Light3D):
     """
     Point light that emits in all directions from a position.
-    (For future implementation with more advanced shaders)
     """
     
     def __init__(self,
@@ -96,16 +113,14 @@ class PointLight3D(Component):
             intensity: Light intensity
             range: Maximum light range
         """
-        super().__init__()
+        super().__init__(color, intensity)
         self._fallback_position = np.array([0, 10, 0], dtype=np.float32)
-        self.color = color
-        self.intensity = intensity
         self.range = range
     
     @property
     def position(self) -> np.ndarray:
         if self.game_object and self.game_object.transform:
-            return self.game_object.transform.position
+            return self.game_object.transform.world_position
         return self._fallback_position.copy()
     
     @position.setter

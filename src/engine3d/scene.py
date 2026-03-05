@@ -8,9 +8,8 @@ import json, pygame
 from .gameobject import GameObject
 from .object3d import Object3D
 from .camera import Camera3D
-from .light import Light3D
+from .light import DirectionalLight3D
 from .graphics.color import Color, ColorType
-from .component import Time
 
 if TYPE_CHECKING:
     from .window import Window3D
@@ -44,17 +43,16 @@ class Scene3D:
         self.window: Optional['Window3D'] = None
         self.objects: List[GameObject] = []
         self.camera = Camera3D()
-        self._fallback_light = Light3D()
         self._setup_done = False
     
     @property
-    def light(self) -> Light3D:
-        """Get the first Light3D component in the scene, or a fallback."""
+    def light(self) -> Optional[DirectionalLight3D]:
+        """Get the first DirectionalLight3D component in the scene, or None if none exists."""
         for obj in self.objects:
-            l = obj.get_component(Light3D)
+            l = obj.get_component(DirectionalLight3D)
             if l:
                 return l
-        return self._fallback_light
+        return None
     
     def _attach_window(self, window: 'Window3D'):
         """Called when scene is attached to a window."""
@@ -155,7 +153,7 @@ class Scene3D:
         """
         # Add default directional light
         light_obj = GameObject("Directional Light")
-        light_obj.add_component(Light3D())
+        light_obj.add_component(DirectionalLight3D())
         light_obj.transform.rotation = (-45, 30, 0)
         self.add_object(light_obj)
     
@@ -292,7 +290,7 @@ class Scene3D:
         if light_data:
             # Handle legacy light data by creating a new GameObject
             light_obj = GameObject("Legacy Light")
-            light = Light3D()
+            light = DirectionalLight3D()
             light.direction = light_data.get("direction", light.direction)
             light.color = light_data.get("color", light.color)
             light.intensity = light_data.get("intensity", light.intensity)

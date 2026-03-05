@@ -18,7 +18,7 @@ from typing import List, Optional, Tuple, Union, TYPE_CHECKING
 from .gameobject import GameObject
 from .object3d import Object3D
 from .camera import Camera3D
-from .light import Light3D
+from .light import Light3D, DirectionalLight3D
 from .graphics.color import Color, ColorType
 from .input.keys import Keys
 from src.physics import ColliderType, CollisionMode, CollisionRelation, Collider
@@ -333,7 +333,6 @@ class Window3D:
         # Scene elements
         self.objects: List[GameObject] = []
         self.camera = Camera3D()
-        self._fallback_light = Light3D()
         
         # Scene system
         self._current_scene: Optional['Scene3D'] = None
@@ -383,13 +382,13 @@ class Window3D:
         drawing.set_window(self)
 
     @property
-    def light(self) -> Light3D:
-        """Get the first Light3D component in the window, or a fallback."""
+    def light(self) -> Optional[DirectionalLight3D]:
+        """Get the first DirectionalLight3D component in the window, or None if none exists."""
         for obj in self.objects:
-            l = obj.get_component(Light3D)
+            l = obj.get_component(DirectionalLight3D)
             if l:
                 return l
-        return self._fallback_light
+        return None
 
     # =========================================================================
     # Object management
@@ -926,7 +925,7 @@ class Window3D:
         """
         # Add default directional light
         light_obj = GameObject("Directional Light")
-        light_obj.add_component(Light3D())
+        light_obj.add_component(DirectionalLight3D())
         light_obj.transform.rotation = (-45, 30, 0)
         self.add_object(light_obj)
     
@@ -1351,9 +1350,20 @@ class Window3D:
         num_pl = min(len(point_lights), 4)
 
         for program in (self._program, self._instanced_program):
-            program['light_dir'].value = tuple(light.direction)
-            program['light_color'].value = tuple(light.color)
-            program['ambient'].value = light.ambient
+            if light:
+                # Multiply by intensity so the intensity property actually works
+                l_col = (
+                    light.color[0] * light.intensity,
+                    light.color[1] * light.intensity,
+                    light.color[2] * light.intensity
+                )
+                program['light_dir'].value = tuple(light.direction)
+                program['light_color'].value = l_col
+                program['ambient'].value = light.ambient
+            else:
+                program['light_dir'].value = (0.0, -1.0, 0.0)
+                program['light_color'].value = (0.0, 0.0, 0.0)
+                program['ambient'].value = 0.0
             
             if 'num_point_lights' in program:
                 program['num_point_lights'].value = num_pl

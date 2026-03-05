@@ -46,7 +46,7 @@ class UIScene(Scene3D):
         self.player = self.add_object(create_cube(1.0, color=Color.YELLOW))
         self.player.transform.position = (0, 0.5, 0)
         go = GameObject()
-        go.add_component(PointLight3D(intensity=10))
+        go.add_component(PointLight3D(intensity=1))
         go.transform.position = (0, 3, 0)
         self.add_object(go)
         self.player.transform.add_child(go.transform)
