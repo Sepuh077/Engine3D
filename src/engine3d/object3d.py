@@ -8,6 +8,7 @@ from .component import Component
 from src.engine3d.gameobject import GameObject
 from trimesh.visual.texture import TextureVisuals
 from .graphics.color import ColorType
+from .graphics.material import Material, LitMaterial
 
 if TYPE_CHECKING:
     import moderngl
@@ -48,6 +49,7 @@ class Object3D(Component):
             c = np.append(c, 1.0)
         self._color = c
         self._visible = True
+        self.material: Material = LitMaterial(color=c)
 
         # GPU handles (initialized later)
         self._vbo = None
@@ -233,18 +235,12 @@ class Object3D(Component):
     @property
     def color(self) -> Tuple[float, float, float]:
         """Get color as tuple."""
-        return tuple(self._color)
+        return tuple(self.material.color_vec4[:3])
     
     @color.setter
     def color(self, value: ColorType):
         """Set color."""
-        # Normalize (support 0-1 or 0-255)
-        c = np.array(value, dtype=np.float32)
-        if c.max() > 1.0:
-            c /= 255.0
-        if len(c) == 3:
-            c = np.append(c, 1.0)
-        self._color = c
+        self.material.color = value
     
     @property
     def visible(self) -> bool:

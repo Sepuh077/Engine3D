@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple, Union, TYPE_CHECKING
 
 from .gameobject import GameObject
 from .object3d import Object3D
+from .graphics.material import UnlitMaterial, LitMaterial, SpecularMaterial, EmissiveMaterial, TransparentMaterial
 from .camera import Camera3D
 from .light import Light3D, DirectionalLight3D
 from .graphics.color import Color, ColorType
@@ -158,33 +159,19 @@ class Window3D:
     uniform vec4 base_color;
     uniform sampler2D tex;
     uniform bool use_texture;
+
+    // Material properties
+    uniform int material_type; // 0: Unlit, 1: Lit, 2: Specular, 3: Emissive
+    uniform vec3 specular_color;
+    uniform float shininess;
+    uniform float emissive_intensity;
+    uniform vec3 view_pos;
     
     out vec4 frag_color;
     
     void main() {
         vec3 normal = normalize(frag_normal);
-        
-        // Directional light
-        vec3 dir_light_dir = normalize(-light_dir);
-        // Two-sided lighting for directional light
-        float dir_diffuse = abs(dot(normal, dir_light_dir));
-        vec3 total_light = light_color * (ambient + dir_diffuse * (1.0 - ambient));
-        
-        // Point lights
-        for (int i = 0; i < num_point_lights; ++i) {
-            vec3 light_vec = point_light_positions[i] - frag_position;
-            float distance = length(light_vec);
-            if (distance < point_light_ranges[i]) {
-                vec3 pl_dir = normalize(light_vec);
-                float pl_diffuse = max(dot(normal, pl_dir), 0.0);
-                
-                // Attenuation (quadratic mix)
-                float attenuation = 1.0 - (distance / point_light_ranges[i]);
-                attenuation = attenuation * attenuation; // Smooth falloff
-                
-                total_light += point_light_colors[i] * pl_diffuse * point_light_intensities[i] * attenuation;
-            }
-        }
+        vec3 view_dir = normalize(view_pos - frag_position);
         
         // Combine vertex color and object tint
         vec4 albedo = frag_v_color * base_color;
@@ -193,9 +180,53 @@ class Window3D:
         }
         
         if (albedo.a < 0.001) discard;
+
+        vec3 result_color;
+
+        if (material_type == 0) { // Unlit
+            result_color = albedo.rgb;
+        } 
+        else if (material_type == 3) { // Emissive
+            result_color = albedo.rgb * emissive_intensity;
+        }
+        else { // Lit or Specular
+            // Directional light
+            vec3 dir_light_dir = normalize(-light_dir);
+            float dir_diffuse = max(dot(normal, dir_light_dir), 0.0);
+            vec3 diffuse_light = light_color * (ambient + dir_diffuse * (1.0 - ambient));
+            
+            vec3 specular_light = vec3(0.0);
+            if (material_type == 2) { // Specular
+                vec3 reflect_dir = reflect(-dir_light_dir, normal);
+                float spec = pow(max(dot(view_dir, reflect_dir), 0.0), shininess);
+                specular_light += light_color * spec * specular_color;
+            }
+
+            // Point lights
+            for (int i = 0; i < num_point_lights; ++i) {
+                vec3 light_vec = point_light_positions[i] - frag_position;
+                float distance = length(light_vec);
+                if (distance < point_light_ranges[i]) {
+                    vec3 pl_dir = normalize(light_vec);
+                    float pl_diffuse = max(dot(normal, pl_dir), 0.0);
+                    
+                    // Attenuation (quadratic mix)
+                    float attenuation = 1.0 - (distance / point_light_ranges[i]);
+                    attenuation = attenuation * attenuation; // Smooth falloff
+                    
+                    diffuse_light += point_light_colors[i] * pl_diffuse * point_light_intensities[i] * attenuation;
+
+                    if (material_type == 2) { // Specular
+                        vec3 reflect_dir = reflect(-pl_dir, normal);
+                        float spec = pow(max(dot(view_dir, reflect_dir), 0.0), shininess);
+                        specular_light += point_light_colors[i] * spec * specular_color * point_light_intensities[i] * attenuation;
+                    }
+                }
+            }
+            result_color = albedo.rgb * diffuse_light + specular_light;
+        }
         
-        vec3 color = albedo.rgb * total_light;
-        frag_color = vec4(color, albedo.a);
+        frag_color = vec4(result_color, albedo.a);
     }
     '''
 
@@ -1350,6 +1381,7 @@ class Window3D:
         num_pl = min(len(point_lights), 4)
 
         for program in (self._program, self._instanced_program):
+            program['view_pos'].value = tuple(camera.position)
             if light:
                 # Multiply by intensity so the intensity property actually works
                 l_col = (
@@ -1411,7 +1443,9 @@ class Window3D:
             
             # Transparency check
             is_transparent = False
-            if len(obj3d._color) == 4 and obj3d._color[3] < 0.99:
+            if isinstance(obj3d.material, TransparentMaterial) or obj3d.material.alpha < 0.99:
+                is_transparent = True
+            elif len(obj3d.material.color_vec4) == 4 and obj3d.material.color_vec4[3] < 0.99:
                 is_transparent = True
             
             if is_transparent:
@@ -1451,8 +1485,25 @@ class Window3D:
 
                 self._program['use_texture'].value = use_texture
 
-                color = tuple(obj3d._color)
-                rgba = color if len(color) == 4 else (*color, 1.0)
+                # Material uniforms
+                mat = obj3d.material
+                if isinstance(mat, UnlitMaterial):
+                    self._program['material_type'].value = 0
+                elif isinstance(mat, LitMaterial):
+                    self._program['material_type'].value = 1
+                elif isinstance(mat, SpecularMaterial):
+                    self._program['material_type'].value = 2
+                    self._program['specular_color'].value = tuple(mat.specular_vec3)
+                    self._program['shininess'].value = float(mat.shininess)
+                elif isinstance(mat, EmissiveMaterial):
+                    self._program['material_type'].value = 3
+                    self._program['emissive_intensity'].value = float(mat.intensity)
+                elif isinstance(mat, TransparentMaterial):
+                    self._program['material_type'].value = 1 # Transparent uses Lit logic but with alpha
+                else:
+                    self._program['material_type'].value = 1 # Default to Lit
+
+                rgba = tuple(mat.color_vec4)
                 self._program['base_color'].value = rgba
 
                 if mesh is not None:
