@@ -43,6 +43,21 @@ from .particle import (
     BoxShape,
 )
 
+# UI System
+from .ui import (
+    UILayer,
+    UIElement,
+    UIContainer,
+    UIEvent,
+    Label,
+    Button,
+    CheckBox,
+    Slider,
+    ProgressBar,
+    Panel,
+    UIManager,
+)
+
 # Arcade-style global 2D drawing (separate module)
 from .drawing import (
     get_window,
@@ -84,6 +99,18 @@ __all__ = [
     'SphereShape',
     'ConeShape',
     'BoxShape',
+    # UI System
+    'UILayer',
+    'UIElement',
+    'UIContainer',
+    'UIEvent',
+    'Label',
+    'Button',
+    'CheckBox',
+    'Slider',
+    'ProgressBar',
+    'Panel',
+    'UIManager',
     # Global 2D drawing (Arcade-style)
     'get_window',
     'draw_text',

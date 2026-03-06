@@ -10,6 +10,7 @@ from .object3d import Object3D
 from .camera import Camera3D
 from .light import DirectionalLight3D
 from .graphics.color import Color, ColorType
+from .ui.manager import UIManager
 
 if TYPE_CHECKING:
     from .window import Window3D
@@ -44,6 +45,7 @@ class Scene3D:
         self.objects: List[GameObject] = []
         self.camera = Camera3D()
         self._setup_done = False
+        self.canvas = UIManager(self)  # UI canvas for this scene
     
     @property
     def light(self) -> Optional[DirectionalLight3D]:

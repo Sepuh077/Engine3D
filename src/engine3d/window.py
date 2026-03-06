@@ -392,6 +392,7 @@ class Window3D:
         self._2d_surface = pygame.Surface((width, height), pygame.SRCALPHA)
         self._fonts = {}
         self._image_cache = {}  # path -> loaded surface
+        
         # Create full-screen quad for 2D overlay
         quad = np.array([
             -1.0, -1.0, 0.0, 1.0,  # bottom-left
@@ -1149,6 +1150,10 @@ class Window3D:
     
     def _render_2d_overlay(self):
         """Render 2D surface as textured quad on top of 3D scene."""
+        # Draw UI elements from current scene's canvas
+        if self._current_scene:
+            self._current_scene.canvas.draw(self._2d_surface)
+        
         # Upload surface to GPU texture (Pygame RGBA -> OpenGL)
         data = pygame.image.tostring(self._2d_surface, "RGBA", False)
         self._2d_texture.write(data)
@@ -1552,6 +1557,10 @@ class Window3D:
     def _handle_events(self):
         """Process pygame events."""
         for event in pygame.event.get():
+            # Pass to scene's canvas UI first
+            if self._current_scene and self._current_scene.canvas.process_pygame_event(event):
+                continue  # UI handled this event
+            
             if event.type == pygame.QUIT:
                 self._running = False
                 
@@ -1652,6 +1661,10 @@ class Window3D:
 
             for obj in self._active_objects():
                 obj.update()
+            
+            # Update scene's canvas UI
+            if self._current_scene:
+                self._current_scene.canvas.update(self._delta_time)
 
             # Auto collision detection + events + resolution (after user update)            
             self._process_collisions()
