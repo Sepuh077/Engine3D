@@ -46,6 +46,20 @@ class MyGame(Window3D):
 MyGame(800, 600, "My 3D Game").run()
 ```
 
+## Editor
+
+Launch the PySide6 editor:
+
+```bash
+python -c "from src.engine3d import run_editor; run_editor('.')"
+```
+
+The editor layout includes:
+- Left: Scene hierarchy with add/remove controls.
+- Center: Renderer viewport with axis, camera frustum, and transform gizmo overlays.
+- Right: Inspector with GameObject details and components.
+- Bottom: Project files browser.
+
 ## Examples
 
 ### Basic Example
