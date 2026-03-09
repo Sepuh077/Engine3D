@@ -1,7 +1,10 @@
-from typing import Optional, TYPE_CHECKING, Generator
+from typing import Optional, TYPE_CHECKING, Generator, Type, TypeVar, List
 
 if TYPE_CHECKING:
     from .gameobject import GameObject
+
+
+T = TypeVar('T', bound="Component")
 
 
 class Time:
@@ -23,6 +26,27 @@ class Component:
 
     def update(self):
         pass
+
+    @property
+    def transform(self):
+        if not self.game_object:
+            return self.game_object.transform
+        return None
+
+    def add_component(self, component: "Component") -> "Component":
+        if not self.game_object:
+            raise AttributeError("Current component must contain 'game_object' before adding a new component!")
+        return self.game_object.add_component(component)
+
+    def get_component(self, component_type: Type[T]) -> Optional[T]:
+        if not self.game_object:
+            return None
+        return self.game_object.get_component(component_type)
+
+    def get_components(self, component_type: Type[T]) -> List[T]:
+        if not self.game_object:
+            return None
+        return self.game_object.get_components(component_type)
 
 
 class WaitForSeconds:
