@@ -1,6 +1,7 @@
 from typing import List, Optional, Type, TypeVar, Generator, Any, Dict, Tuple
 import importlib
 import json
+import uuid
 
 import numpy as np
 
@@ -9,11 +10,17 @@ from .transform import Transform
 
 T = TypeVar('T', bound=Component)
 
+# Global registry for resolving component references during deserialization
+_component_ref_registry: Dict[str, 'GameObject'] = {}
+
 class GameObject:
-    def __init__(self, name: str = "GameObject"):
+    def __init__(self, name: str = "GameObject", _id: Optional[str] = None):
         self.name = name
         self.tag = None
         self.components: List[Component] = []
+        
+        # Unique ID for serialization (auto-generated, not exposed to users)
+        self._id = _id if _id else str(uuid.uuid4())
         
         # Every GameObject has a Transform
         self.transform = Transform()
@@ -206,14 +213,15 @@ class GameObject:
 
     def _to_prefab_dict(self) -> Dict[str, Any]:
         return {
+            "_id": self._id,
             "name": self.name,
             "tag": self.tag,
-            "components": [self._component_to_prefab(comp) for comp in self.components],
+            "components": [self._component_to_prefab(comp, idx) for idx, comp in enumerate(self.components)],
         }
 
     @classmethod
     def _from_prefab_dict(cls, data: Dict[str, Any]) -> "GameObject":
-        game_object = cls(name=data.get("name", "GameObject"))
+        game_object = cls(name=data.get("name", "GameObject"), _id=data.get("_id"))
         game_object.tag = data.get("tag")
 
         components_data = data.get("components", [])
@@ -231,7 +239,7 @@ class GameObject:
         return game_object
 
     @staticmethod
-    def _component_to_prefab(component: Component) -> Dict[str, Any]:
+    def _component_to_prefab(component: Component, component_index: int = 0) -> Dict[str, Any]:
         comp_cls = component.__class__
         module_name = comp_cls.__module__
         class_name = comp_cls.__name__
@@ -274,8 +282,11 @@ class GameObject:
                 "_transform_dirty",
             })
 
+        # Get the game object ID for component references
+        game_object_id = component.game_object._id if component.game_object else None
+
         state = {
-            key: GameObject._serialize_value(value)
+            key: GameObject._serialize_value(value, game_object_id, component_index)
             for key, value in component.__dict__.items()
             if key not in skip_keys
         }
@@ -301,8 +312,14 @@ class GameObject:
             raise ValueError(f"Component class '{class_name}' not found in {module_name}")
 
         component: Component = comp_cls()
-        restored_state = GameObject._deserialize_value(state)
+        
+        # First pass: deserialize without resolving component refs
+        # Store the raw state for later resolution
+        restored_state = GameObject._deserialize_value(state, None)  # None = no registry yet
         component.__dict__.update(restored_state)
+        
+        # Store the raw serialized state for second-pass resolution
+        component._serialized_state = state
 
         if module_name == "src.engine3d.object3d" and class_name == "Object3D":
             GameObject._restore_object3d_geometry(component)
@@ -310,7 +327,25 @@ class GameObject:
         return component
 
     @staticmethod
-    def _serialize_value(value: Any) -> Any:
+    def _serialize_value(value: Any, source_go_id: str = None, source_comp_idx: int = 0) -> Any:
+        # Handle component references
+        if isinstance(value, Component):
+            if value.game_object:
+                # Find the component index
+                comp_idx = -1
+                for idx, comp in enumerate(value.game_object.components):
+                    if comp is value:
+                        comp_idx = idx
+                        break
+                if comp_idx >= 0:
+                    return {
+                        "__type__": "component_ref",
+                        "game_object_id": value.game_object._id,
+                        "component_index": comp_idx,
+                        "component_class": f"{value.__class__.__module__}.{value.__class__.__name__}",
+                    }
+            return None  # Component without game_object, can't reference
+        
         if isinstance(value, np.ndarray):
             return {
                 "__type__": "ndarray",
@@ -335,7 +370,7 @@ class GameObject:
             Material = None
         if Material is not None and isinstance(value, Material):
             state = {
-                k: GameObject._serialize_value(v)
+                k: GameObject._serialize_value(v, source_go_id, source_comp_idx)
                 for k, v in value.__dict__.items()
             }
             return {
@@ -345,18 +380,18 @@ class GameObject:
             }
 
         if isinstance(value, dict):
-            return {key: GameObject._serialize_value(val) for key, val in value.items()}
+            return {key: GameObject._serialize_value(val, source_go_id, source_comp_idx) for key, val in value.items()}
         if isinstance(value, list):
-            return [GameObject._serialize_value(val) for val in value]
+            return [GameObject._serialize_value(val, source_go_id, source_comp_idx) for val in value]
         if isinstance(value, set):
             return {
                 "__type__": "set",
-                "value": [GameObject._serialize_value(val) for val in value],
+                "value": [GameObject._serialize_value(val, source_go_id, source_comp_idx) for val in value],
             }
         if isinstance(value, tuple):
             return {
                 "__type__": "tuple",
-                "value": [GameObject._serialize_value(val) for val in value],
+                "value": [GameObject._serialize_value(val, source_go_id, source_comp_idx) for val in value],
             }
         if isinstance(value, bytes):
             return {
@@ -372,14 +407,25 @@ class GameObject:
         return value
 
     @staticmethod
-    def _deserialize_value(value: Any) -> Any:
+    def _deserialize_value(value: Any, go_registry: Dict[str, 'GameObject'] = None) -> Any:
         if isinstance(value, dict):
+            # Handle component references
+            if value.get("__type__") == "component_ref":
+                if go_registry is None:
+                    return None  # Can't resolve without registry
+                go_id = value.get("game_object_id")
+                comp_idx = value.get("component_index", 0)
+                go = go_registry.get(go_id)
+                if go and 0 <= comp_idx < len(go.components):
+                    return go.components[comp_idx]
+                return None
+            
             if value.get("__type__") == "ndarray":
                 return np.array(value.get("value", []), dtype=value.get("dtype", None))
             if value.get("__type__") == "tuple":
-                return tuple(GameObject._deserialize_value(val) for val in value.get("value", []))
+                return tuple(GameObject._deserialize_value(val, go_registry) for val in value.get("value", []))
             if value.get("__type__") == "set":
-                return set(GameObject._deserialize_value(val) for val in value.get("value", []))
+                return set(GameObject._deserialize_value(val, go_registry) for val in value.get("value", []))
             if value.get("__type__") == "ColliderGroup":
                 from src.physics.group import ColliderGroup
                 name = value.get("name", "default")
@@ -390,16 +436,16 @@ class GameObject:
                 state = value.get("state", {})
                 mat_cls = getattr(material, class_name, material.LitMaterial)
                 mat = mat_cls()
-                restored_state = GameObject._deserialize_value(state)
+                restored_state = GameObject._deserialize_value(state, go_registry)
                 mat.__dict__.update(restored_state)
                 return mat
             if value.get("__type__") == "bytes":
                 return bytes(value.get("value", []))
             if value.get("__type__") == "repr":
                 return value.get("value")
-            return {key: GameObject._deserialize_value(val) for key, val in value.items()}
+            return {key: GameObject._deserialize_value(val, go_registry) for key, val in value.items()}
         if isinstance(value, list):
-            return [GameObject._deserialize_value(val) for val in value]
+            return [GameObject._deserialize_value(val, go_registry) for val in value]
         return value
 
     @staticmethod

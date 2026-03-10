@@ -18,6 +18,8 @@ class InspectorFieldType(Enum):
     COLOR = "color"
     VECTOR3 = "vector3"
     ENUM = "enum"
+    LIST = "list"
+    COMPONENT_REF = "component_ref"
 
 
 @dataclass
@@ -35,6 +37,8 @@ class InspectorFieldInfo:
         decimals: Number of decimal places (for float types)
         enum_options: List of (value, label) tuples for enum types
         tooltip: Optional tooltip text
+        list_item_type: The type of items in a list field (for LIST type)
+        component_type: The component class type (for COMPONENT_REF type)
     """
     name: str
     field_type: InspectorFieldType
@@ -45,6 +49,8 @@ class InspectorFieldInfo:
     decimals: Optional[int] = None
     enum_options: Optional[List[Tuple[Any, str]]] = None
     tooltip: Optional[str] = None
+    list_item_type: Optional[Union[type, InspectorFieldType]] = None
+    component_type: Optional[type] = None
 
 
 class InspectorField:
@@ -59,6 +65,8 @@ class InspectorField:
             speed = InspectorField(float, default=5.0, min_value=0.0, max_value=100.0)
             enabled = InspectorField(bool, default=True)
             color = InspectorField(color, default=(1.0, 1.0, 1.0))
+            targets = InspectorField(list, default=[], list_item_type=float)
+            player_transform = InspectorField(Component, default=None, component_type=Transform)
             
             def update(self):
                 # Use speed as a regular float
@@ -76,12 +84,14 @@ class InspectorField:
         decimals: Optional[int] = None,
         enum_options: Optional[List[Tuple[Any, str]]] = None,
         tooltip: Optional[str] = None,
+        list_item_type: Optional[Union[type, InspectorFieldType]] = None,
+        component_type: Optional[type] = None,
     ):
         """
         Initialize an inspector field.
         
         Args:
-            field_type: The type of the field (float, int, bool, str, color, vector3)
+            field_type: The type of the field (float, int, bool, str, color, vector3, list, Component)
                        or an InspectorFieldType enum value.
             default: Default value for the field (if None, a sensible default is used)
             min_value: Minimum value for numeric types
@@ -90,6 +100,8 @@ class InspectorField:
             decimals: Decimal places for float types
             enum_options: List of (value, label) tuples for enum types
             tooltip: Tooltip text for the inspector
+            list_item_type: The type of items in a list (for list fields)
+            component_type: The component class type (for component reference fields)
         """
         # Convert Python type to InspectorFieldType
         if isinstance(field_type, InspectorFieldType):
@@ -106,11 +118,18 @@ class InspectorField:
             self.field_type = InspectorFieldType.COLOR
         elif isinstance(field_type, _Vector3Type):
             self.field_type = InspectorFieldType.VECTOR3
+        elif field_type == list:
+            self.field_type = InspectorFieldType.LIST
         elif isinstance(field_type, type) and issubclass(field_type, Enum):
             self.field_type = InspectorFieldType.ENUM
             # Auto-generate enum options if not provided
             if enum_options is None:
                 enum_options = [(e.value, e.name) for e in field_type]
+        elif isinstance(field_type, type) and issubclass(field_type, Component):
+            self.field_type = InspectorFieldType.COMPONENT_REF
+            # Auto-set component_type if not provided
+            if component_type is None:
+                component_type = field_type
         else:
             raise ValueError(f"Unsupported field type: {field_type}")
         
@@ -125,6 +144,8 @@ class InspectorField:
         self.decimals = decimals
         self.enum_options = enum_options
         self.tooltip = tooltip
+        self.list_item_type = list_item_type
+        self.component_type = component_type
         
         # Will be set by __set_name__
         self.name: Optional[str] = None
@@ -149,6 +170,10 @@ class InspectorField:
             if self.enum_options:
                 return self.enum_options[0][0]
             return None
+        elif self.field_type == InspectorFieldType.LIST:
+            return []  # Empty list by default
+        elif self.field_type == InspectorFieldType.COMPONENT_REF:
+            return None  # No component reference by default
         return None
     
     def __set_name__(self, owner: type, name: str):
@@ -182,6 +207,8 @@ class InspectorField:
             decimals=self.decimals,
             enum_options=self.enum_options,
             tooltip=self.tooltip,
+            list_item_type=self.list_item_type,
+            component_type=self.component_type,
         )
 
 
@@ -209,6 +236,8 @@ def inspector_field(
     decimals: Optional[int] = None,
     enum_options: Optional[List[Tuple[Any, str]]] = None,
     tooltip: Optional[str] = None,
+    list_item_type: Optional[Union[type, InspectorFieldType]] = None,
+    component_type: Optional[type] = None,
 ) -> InspectorField:
     """
     Convenience function to create an InspectorField.
@@ -225,6 +254,8 @@ def inspector_field(
         decimals=decimals,
         enum_options=enum_options,
         tooltip=tooltip,
+        list_item_type=list_item_type,
+        component_type=component_type,
     )
 
 

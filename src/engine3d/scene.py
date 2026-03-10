@@ -2,7 +2,7 @@
 Scene3D - A scene that can be shown in a Window3D.
 Similar to arcade.View, but renamed for clarity.
 """
-from typing import List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 import json, pygame
 
 from .gameobject import GameObject
@@ -147,8 +147,8 @@ class Scene3D:
             if obj3d_comp:
                 self.window._ensure_mesh(obj3d_comp)
         
-        # Awake scripts on the new object (start is called when play mode begins)
-        go.awake_scripts()
+        # Note: awake_scripts() and start_scripts() should NOT be called here
+        # They should only be called when play mode begins
         
         # Register cameras
         for cam in go.get_components(Camera3D):
@@ -365,8 +365,16 @@ class Scene3D:
             scene.camera.near = camera_data.get("near", scene.camera.near)
             scene.camera.far = camera_data.get("far", scene.camera.far)
 
+        # First pass: Create all game objects and build registry
+        go_registry: Dict[str, GameObject] = {}
         for obj_data in data.get("objects", []):
-            scene.objects.append(GameObject._from_prefab_dict(obj_data))
+            obj = GameObject._from_prefab_dict(obj_data)
+            scene.objects.append(obj)
+            go_registry[obj._id] = obj
+
+        # Second pass: Resolve component references in all objects
+        for obj in scene.objects:
+            cls._resolve_component_references(obj, go_registry)
 
         for obj in scene.objects:
             for cam in obj.get_components(Camera3D):
@@ -385,12 +393,38 @@ class Scene3D:
             light.intensity = light_data.get("intensity", light.intensity)
             light.ambient = light_data.get("ambient", light.ambient)
             light_obj.add_component(light)
-            scene.add_object(light_obj)
+            scene.objects.append(light_obj)
+            
+            # Register the light's camera if it has one
+            for cam in light_obj.get_components(Camera3D):
+                if cam not in scene._cameras:
+                    scene._cameras.append(cam)
+                    if scene._main_camera is None:
+                        scene._main_camera = cam
 
-        for obj in scene.objects:
-            obj.awake_scripts()
+        # Note: awake_scripts() and start_scripts() should NOT be called here
+        # They should only be called when play mode begins
 
         return scene
+    
+    @staticmethod
+    def _resolve_component_references(obj: GameObject, go_registry: Dict[str, GameObject]) -> None:
+        """
+        Second pass: Resolve component references in all components of an object.
+        This is needed because component references point to other objects/components
+        that may not exist during the first pass of deserialization.
+        """
+        from .gameobject import GameObject
+        
+        for component in obj.components:
+            # Check if this component has serialized state that needs resolution
+            serialized_state = getattr(component, '_serialized_state', None)
+            if serialized_state:
+                # Re-deserialize with the registry to resolve component references
+                restored_state = GameObject._deserialize_value(serialized_state, go_registry)
+                component.__dict__.update(restored_state)
+                # Clean up the temporary attribute
+                delattr(component, '_serialized_state')
 
     # 2D drawing methods (forward to window if attached)
     # Allows drawing shapes and text in Scene3D.on_draw()

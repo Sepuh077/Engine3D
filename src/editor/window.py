@@ -77,6 +77,9 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
 
 
 class EditorWindow(QtWidgets.QMainWindow):
+    # Signal emitted when a play mode error occurs
+    play_mode_error = QtCore.Signal(str, str)  # (error_message, traceback_text)
+    
     def __init__(self, project_root: str, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         self.project_root = Path(project_root).resolve()
@@ -124,6 +127,9 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._debounce_timer = QtCore.QTimer(self)
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.timeout.connect(self._reload_script_components)
+
+        # Connect play mode error signal
+        self.play_mode_error.connect(self._on_play_mode_error)
 
         self._build_layout()
         self._setup_files_panel()
@@ -476,6 +482,7 @@ class EditorWindow(QtWidgets.QMainWindow):
     def _create_script_file(self, file_path: Path, class_name: str) -> None:
         """Create a new script file with the template."""
         script_template = f'''from src.engine3d import Script, Time, InspectorField, color, vector3
+from src.engine3d.transform import Transform
 
 
 class {class_name}(Script):
@@ -489,10 +496,20 @@ class {class_name}(Script):
         is_active = InspectorField(bool, default=True)
         player_color = InspectorField(color, default=(1.0, 0.0, 0.0))
         spawn_pos = InspectorField(vector3, default=(0.0, 0.0, 0.0))
+        
+    List fields - allows adding multiple values:
+        scores = InspectorField(list, default=[], list_item_type=int)
+        waypoints = InspectorField(list, default=[], list_item_type=float)
+        
+    Component reference fields - reference other components:
+        player_transform = InspectorField(Transform, default=None, component_type=Transform)
+        target_camera = InspectorField(Camera3D, default=None, component_type=Camera3D)
     """
     
     # Example inspector fields (uncomment to use):
     # speed = InspectorField(float, default=5.0, min_value=0.0, max_value=100.0, tooltip="Movement speed")
+    # scores = InspectorField(list, default=[], list_item_type=int)
+    # player_transform = InspectorField(Transform, default=None, component_type=Transform)
     
     def start(self):
         """
@@ -587,6 +604,32 @@ class {class_name}(Script):
         
         # Watch the script file for changes if it's a Script component
         self._watch_script_component(component)
+
+    def _remove_component(self, component) -> None:
+        """Remove a component from the selected game object."""
+        obj = self._selection.game_object
+        if not obj:
+            return
+        
+        # Don't allow removing Transform
+        from src.engine3d.transform import Transform
+        if isinstance(component, Transform):
+            QtWidgets.QMessageBox.warning(self, "Cannot Remove", "Cannot remove Transform component.")
+            return
+        
+        # Check if component belongs to the selected object
+        if component not in obj.components:
+            return
+        
+        # Remove the component
+        obj.components.remove(component)
+        component.game_object = None
+        
+        # Refresh the inspector
+        self._components_dirty = True
+        self._update_inspector_fields(force_components=True)
+        self._viewport.update()
+        self._mark_scene_dirty()
 
     def _watch_script_component(self, component) -> None:
         """Add a script component's source file to the file watcher."""
@@ -809,7 +852,19 @@ class {class_name}(Script):
             self._pause_action.setText("Pause")
             
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to start play mode:\n{e}")
+            import traceback
+            error_msg = str(e)
+            traceback_text = traceback.format_exc()
+            
+            # Show error dialog with details
+            msg_box = QtWidgets.QMessageBox(self)
+            msg_box.setWindowTitle("Play Mode Error")
+            msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
+            msg_box.setText("An error occurred while starting play mode.")
+            msg_box.setInformativeText(f"Error: {error_msg}\n\nPlay mode could not be started.")
+            msg_box.setDetailedText(traceback_text)
+            msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+            msg_box.exec()
 
     def _on_pause_clicked(self) -> None:
         """Toggle pause state."""
@@ -857,6 +912,24 @@ class {class_name}(Script):
             
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to stop play mode:\n{e}")
+
+    def _on_play_mode_error(self, error_msg: str, traceback_text: str) -> None:
+        """
+        Handle an error that occurred during play mode.
+        Stops play mode and shows an error dialog.
+        """
+        # Stop play mode first
+        self._on_stop_clicked()
+        
+        # Show error dialog with details
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setWindowTitle("Play Mode Error")
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
+        msg_box.setText("An error occurred during play mode.")
+        msg_box.setInformativeText(f"Error: {error_msg}\n\nPlay mode has been stopped.")
+        msg_box.setDetailedText(traceback_text)
+        msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+        msg_box.exec()
 
     def _setup_timer(self) -> None:
         self._timer = QtCore.QTimer(self)
@@ -1108,20 +1181,31 @@ class {class_name}(Script):
         """Called by ViewportWidget.paintGL() to render the frame."""
         if not self._window:
             return
-            
-        # Update moderngl framebuffer wrapper if ID changed (e.g. after resize)
-        fbo_id = self._viewport.defaultFramebufferObject()
-        if not hasattr(self, '_last_fbo_id') or self._last_fbo_id != fbo_id:
-            self._last_fbo_id = fbo_id
-            self._window._screen_fbo = self._window._ctx.detect_framebuffer()
         
-        # Ensure moderngl knows about it
-        if getattr(self._window, '_screen_fbo', None):
-            self._window._screen_fbo.use()
+        try:
+            # Update moderngl framebuffer wrapper if ID changed (e.g. after resize)
+            fbo_id = self._viewport.defaultFramebufferObject()
+            if not hasattr(self, '_last_fbo_id') or self._last_fbo_id != fbo_id:
+                self._last_fbo_id = fbo_id
+                self._window._screen_fbo = self._window._ctx.detect_framebuffer()
             
-        simulate = self._playing and not self._paused
-        if not self._window.tick(simulate=simulate):
-            self._timer.stop()
+            # Ensure moderngl knows about it
+            if getattr(self._window, '_screen_fbo', None):
+                self._window._screen_fbo.use()
+                
+            simulate = self._playing and not self._paused
+            if not self._window.tick(simulate=simulate):
+                self._timer.stop()
+        except Exception as e:
+            # Handle errors during play mode
+            if self._playing:
+                import traceback
+                error_msg = str(e)
+                traceback_text = traceback.format_exc()
+                self.play_mode_error.emit(error_msg, traceback_text)
+            else:
+                # Re-raise if not in play mode
+                raise
 
     def _tick_engine(self) -> None:
         """Called by timer to request a redraw and update UI state."""
@@ -1654,8 +1738,12 @@ class {class_name}(Script):
             A QGroupBox containing the inspector fields
         """
         box = QtWidgets.QGroupBox(comp.__class__.__name__)
-        layout = QtWidgets.QFormLayout(box)
-        layout.setContentsMargins(6, 6, 6, 6)
+        main_layout = QtWidgets.QVBoxLayout(box)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        
+        # Create a form layout for the fields
+        form_layout = QtWidgets.QFormLayout()
+        form_layout.setContentsMargins(0, 0, 0, 0)
         
         # Store field widgets for updating
         field_widgets = {}
@@ -1663,8 +1751,15 @@ class {class_name}(Script):
         for field_name, field_info in inspector_fields:
             widget = self._create_widget_for_field(comp, field_name, field_info)
             if widget:
-                layout.addRow(self._format_field_label(field_name), widget)
+                form_layout.addRow(self._format_field_label(field_name), widget)
                 field_widgets[field_name] = widget
+        
+        main_layout.addLayout(form_layout)
+        
+        # Add remove button
+        remove_btn = QtWidgets.QPushButton("Remove Component")
+        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        main_layout.addWidget(remove_btn)
         
         box._inspector_field_widgets = field_widgets
         return box
@@ -1703,6 +1798,10 @@ class {class_name}(Script):
             return self._create_vector3_field(comp, field_name, field_info, current_value)
         elif field_info.field_type == InspectorFieldType.ENUM:
             return self._create_enum_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.LIST:
+            return self._create_list_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.COMPONENT_REF:
+            return self._create_component_ref_field(comp, field_name, field_info, current_value)
         else:
             # Fallback: just show a label
             label = QtWidgets.QLabel(str(current_value))
@@ -1841,6 +1940,214 @@ class {class_name}(Script):
         combo.currentIndexChanged.connect(lambda idx, c=comp, fn=field_name, cb=combo: self._on_inspector_field_changed(c, fn, cb.currentData()))
         return combo
 
+    def _create_list_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QWidget:
+        """Create a dynamic list editor widget for a list field."""
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        
+        # Container for list items
+        items_container = QtWidgets.QWidget()
+        items_layout = QtWidgets.QVBoxLayout(items_container)
+        items_layout.setContentsMargins(0, 0, 0, 0)
+        items_layout.setSpacing(2)
+        
+        # Get the current list value (default to empty list)
+        current_list = list(current_value) if current_value is not None else []
+        
+        # Store references to item widgets for updating
+        item_widgets = []
+        
+        def add_list_item(item_value=None, index=None):
+            """Add a new item to the list UI."""
+            item_widget = QtWidgets.QWidget()
+            item_layout = QtWidgets.QHBoxLayout(item_widget)
+            item_layout.setContentsMargins(0, 0, 0, 0)
+            item_layout.setSpacing(4)
+            
+            # Determine item type for the editor
+            item_type = field_info.list_item_type
+            
+            # Create appropriate editor based on item type
+            if item_type == float:
+                editor = QtWidgets.QDoubleSpinBox()
+                editor.setRange(-10000.0, 10000.0)
+                editor.setSingleStep(0.1)
+                editor.setDecimals(2)
+                if item_value is not None:
+                    editor.setValue(float(item_value))
+                else:
+                    editor.setValue(0.0)
+            elif item_type == int:
+                editor = QtWidgets.QSpinBox()
+                editor.setRange(-10000, 10000)
+                if item_value is not None:
+                    editor.setValue(int(item_value))
+                else:
+                    editor.setValue(0)
+            elif item_type == str:
+                editor = QtWidgets.QLineEdit()
+                if item_value is not None:
+                    editor.setText(str(item_value))
+                else:
+                    editor.setText("")
+            else:
+                # Default to string for unknown types
+                editor = QtWidgets.QLineEdit()
+                if item_value is not None:
+                    editor.setText(str(item_value))
+                else:
+                    editor.setText("")
+            
+            # Remove button
+            remove_btn = QtWidgets.QPushButton("-")
+            remove_btn.setFixedWidth(24)
+            remove_btn.setToolTip("Remove this item")
+            
+            item_layout.addWidget(editor, 1)
+            item_layout.addWidget(remove_btn)
+            
+            items_layout.addWidget(item_widget)
+            item_widgets.append((item_widget, editor))
+            
+            # Connect remove button
+            remove_btn.clicked.connect(lambda: remove_list_item(item_widget))
+            
+            # Connect value change to update the list
+            if isinstance(editor, QtWidgets.QDoubleSpinBox):
+                editor.valueChanged.connect(lambda: update_list_value())
+            elif isinstance(editor, QtWidgets.QSpinBox):
+                editor.valueChanged.connect(lambda: update_listValue())
+            elif isinstance(editor, QtWidgets.QLineEdit):
+                editor.editingFinished.connect(lambda: update_list_value())
+            
+            update_list_value()
+            return item_widget
+        
+        def remove_list_item(item_widget):
+            """Remove an item from the list UI."""
+            for i, (widget, editor) in enumerate(item_widgets):
+                if widget is item_widget:
+                    item_widgets.pop(i)
+                    widget.setParent(None)
+                    widget.deleteLater()
+                    break
+            update_list_value()
+        
+        def update_list_value():
+            """Update the component's list value from the UI."""
+            new_list = []
+            item_type = field_info.list_item_type
+            
+            for widget, editor in item_widgets:
+                if isinstance(editor, QtWidgets.QDoubleSpinBox):
+                    new_list.append(editor.value())
+                elif isinstance(editor, QtWidgets.QSpinBox):
+                    new_list.append(editor.value())
+                elif isinstance(editor, QtWidgets.QLineEdit):
+                    if item_type == int:
+                        try:
+                            new_list.append(int(editor.text()))
+                        except ValueError:
+                            new_list.append(0)
+                    elif item_type == float:
+                        try:
+                            new_list.append(float(editor.text()))
+                        except ValueError:
+                            new_list.append(0.0)
+                    else:
+                        new_list.append(editor.text())
+            
+            comp.set_inspector_field_value(field_name, new_list)
+            self._mark_scene_dirty()
+        
+        # Add existing items
+        for item in current_list:
+            add_list_item(item)
+        
+        # Add button
+        add_btn = QtWidgets.QPushButton("+ Add Item")
+        add_btn.setToolTip("Add a new item to the list")
+        add_btn.clicked.connect(lambda: add_list_item())
+        
+        layout.addWidget(items_container)
+        layout.addWidget(add_btn)
+        
+        # Store references for later updates
+        widget._items_container = items_container
+        widget._item_widgets = item_widgets
+        widget._add_item_func = add_list_item
+        widget._update_list_value = update_list_value
+        
+        if field_info.tooltip:
+            widget.setToolTip(field_info.tooltip)
+        
+        return widget
+
+    def _create_component_ref_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QComboBox:
+        """Create a combo box for selecting a component reference."""
+        combo = QtWidgets.QComboBox()
+        
+        # Add "None" option
+        combo.addItem("(None)", None)
+        
+        # Get the component type filter
+        component_type = field_info.component_type
+        
+        # Collect all components of the specified type from all game objects
+        component_entries = []  # (display_name, component_instance)
+        
+        if self._scene:
+            for obj in self._scene.objects:
+                if component_type:
+                    # Find components of the specified type
+                    components = obj.get_components(component_type)
+                    for c in components:
+                        display_name = f"{obj.name} ({c.__class__.__name__})"
+                        component_entries.append((display_name, c))
+                else:
+                    # If no specific type, show all components
+                    for c in obj.components:
+                        if c is not obj.transform:  # Skip transform
+                            display_name = f"{obj.name} ({c.__class__.__name__})"
+                            component_entries.append((display_name, c))
+        
+        # Sort entries by display name
+        component_entries.sort(key=lambda x: x[0])
+        
+        # Add to combo box
+        for display_name, component in component_entries:
+            combo.addItem(display_name, id(component))  # Use id() as data
+        
+        # Set current value if there is one
+        if current_value is not None:
+            target_id = id(current_value)
+            for i in range(combo.count()):
+                if combo.itemData(i) == target_id:
+                    combo.setCurrentIndex(i)
+                    break
+        
+        if field_info.tooltip:
+            combo.setToolTip(field_info.tooltip)
+        
+        # Handle selection change
+        def on_selection_changed(idx):
+            data = combo.itemData(idx)
+            if data is None:
+                comp.set_inspector_field_value(field_name, None)
+            else:
+                # Find the component by id
+                for display_name, component in component_entries:
+                    if id(component) == data:
+                        comp.set_inspector_field_value(field_name, component)
+                        break
+            self._viewport.update()
+            self._mark_scene_dirty()
+        
+        combo.currentIndexChanged.connect(on_selection_changed)
+        return combo
+
     def _on_inspector_field_changed(self, comp, field_name: str, value: Any) -> None:
         """Handle when an inspector field value changes."""
         comp.set_inspector_field_value(field_name, value)
@@ -1946,15 +2253,28 @@ class {class_name}(Script):
             elif hasattr(widget, "_vector_fields"):
                 # Vector3 widget
                 self._refresh_vector_row(widget, current_value)
+            # Note: List and component_ref widgets are not refreshed dynamically
+            # as they are complex UI structures that would be rebuilt on selection change
 
     def _create_object3d_fields(self, comp: 'Object3D') -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox(comp.__class__.__name__)
-        layout = QtWidgets.QFormLayout(box)
-        layout.setContentsMargins(6, 6, 6, 6)
+        main_layout = QtWidgets.QVBoxLayout(box)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        
+        form_layout = QtWidgets.QFormLayout()
+        form_layout.setContentsMargins(0, 0, 0, 0)
 
         color_widget = self._create_color_editor(comp)
-        layout.addRow("Color", color_widget)
+        form_layout.addRow("Color", color_widget)
         box._color_widget = color_widget
+        
+        main_layout.addLayout(form_layout)
+        
+        # Add remove button
+        remove_btn = QtWidgets.QPushButton("Remove Component")
+        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        main_layout.addWidget(remove_btn)
+        
         return box
 
     def _refresh_object3d_fields(self, box: QtWidgets.QGroupBox, comp: 'Object3D') -> None:
@@ -1963,8 +2283,11 @@ class {class_name}(Script):
 
     def _create_rigidbody_fields(self, comp: 'Rigidbody') -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox(comp.__class__.__name__)
-        layout = QtWidgets.QFormLayout(box)
-        layout.setContentsMargins(6, 6, 6, 6)
+        main_layout = QtWidgets.QVBoxLayout(box)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        
+        layout = QtWidgets.QFormLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
 
         use_gravity = QtWidgets.QCheckBox()
         use_gravity.setChecked(comp.use_gravity)
@@ -1996,6 +2319,13 @@ class {class_name}(Script):
         layout.addRow("Drag", drag)
         box._drag_field = drag
 
+        main_layout.addLayout(layout)
+        
+        # Add remove button
+        remove_btn = QtWidgets.QPushButton("Remove Component")
+        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        main_layout.addWidget(remove_btn)
+
         return box
 
     def _refresh_rigidbody_fields(self, box: QtWidgets.QGroupBox, comp: 'Rigidbody') -> None:
@@ -2017,12 +2347,21 @@ class {class_name}(Script):
         label = QtWidgets.QLabel("No editable fields")
         label.setStyleSheet("color: #888;")
         layout.addWidget(label)
+        
+        # Add remove button
+        remove_btn = QtWidgets.QPushButton("Remove Component")
+        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        layout.addWidget(remove_btn)
+        
         return box
 
     def _create_light_fields(self, light) -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox(light.__class__.__name__)
-        layout = QtWidgets.QFormLayout(box)
-        layout.setContentsMargins(6, 6, 6, 6)
+        main_layout = QtWidgets.QVBoxLayout(box)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        
+        layout = QtWidgets.QFormLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
 
         intensity = self._make_spinbox(0.0, 1000.0, step=0.1, decimals=2)
         intensity.setValue(float(light.intensity))
@@ -2033,6 +2372,14 @@ class {class_name}(Script):
         color_widget = self._create_color_editor(light)
         layout.addRow("Color", color_widget)
         box._color_widget = color_widget
+        
+        main_layout.addLayout(layout)
+        
+        # Add remove button
+        remove_btn = QtWidgets.QPushButton("Remove Component")
+        remove_btn.clicked.connect(lambda checked, c=light: self._remove_component(c))
+        main_layout.addWidget(remove_btn)
+        
         return box
 
     def _create_directional_light_fields(self, light) -> QtWidgets.QGroupBox:
@@ -2080,37 +2427,59 @@ class {class_name}(Script):
 
     def _create_collider_fields(self, collider) -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox(collider.__class__.__name__)
-        layout = QtWidgets.QFormLayout(box)
-        layout.setContentsMargins(6, 6, 6, 6)
+        main_layout = QtWidgets.QVBoxLayout(box)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        
+        layout = QtWidgets.QFormLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
 
         center_row = self._make_vector_row(collider.center, lambda value, c=collider: self._on_collider_center_changed(c, center_row))
         layout.addRow("Center", center_row)
         box._center_row = center_row
+        
+        main_layout.addLayout(layout)
+        
+        # Store the form layout for subclasses to add more fields
+        box._form_layout = layout
+        box._main_layout = main_layout
+        
         return box
 
     def _create_box_collider_fields(self, collider: 'BoxCollider') -> QtWidgets.QGroupBox:
         box = self._create_collider_fields(collider)
-        layout = box.layout()
+        layout = box._form_layout
 
         size_row = self._make_vector_row(collider.size, lambda value, c=collider: self._on_box_collider_size_changed(c, size_row))
         layout.addRow("Size", size_row)
         box._size_row = size_row
+        
+        # Add remove button at the end
+        remove_btn = QtWidgets.QPushButton("Remove Component")
+        remove_btn.clicked.connect(lambda checked, c=collider: self._remove_component(c))
+        box._main_layout.addWidget(remove_btn)
+        
         return box
 
     def _create_sphere_collider_fields(self, collider: 'SphereCollider') -> QtWidgets.QGroupBox:
         box = self._create_collider_fields(collider)
-        layout = box.layout()
+        layout = box._form_layout
 
         radius = self._make_spinbox(0.01, 1000.0, step=0.1, decimals=2)
         radius.setValue(float(collider.radius))
         radius.valueChanged.connect(lambda value, c=collider: self._on_sphere_collider_radius_changed(c, value))
         layout.addRow("Radius", radius)
         box._radius_field = radius
+        
+        # Add remove button at the end
+        remove_btn = QtWidgets.QPushButton("Remove Component")
+        remove_btn.clicked.connect(lambda checked, c=collider: self._remove_component(c))
+        box._main_layout.addWidget(remove_btn)
+        
         return box
 
     def _create_capsule_collider_fields(self, collider: 'CapsuleCollider') -> QtWidgets.QGroupBox:
         box = self._create_collider_fields(collider)
-        layout = box.layout()
+        layout = box._form_layout
 
         radius = self._make_spinbox(0.01, 1000.0, step=0.1, decimals=2)
         radius.setValue(float(collider.radius))
@@ -2124,6 +2493,12 @@ class {class_name}(Script):
 
         box._radius_field = radius
         box._height_field = height
+        
+        # Add remove button at the end
+        remove_btn = QtWidgets.QPushButton("Remove Component")
+        remove_btn.clicked.connect(lambda checked, c=collider: self._remove_component(c))
+        box._main_layout.addWidget(remove_btn)
+        
         return box
 
     def _refresh_light_fields(self, box: QtWidgets.QGroupBox, light) -> None:
