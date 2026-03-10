@@ -1,7 +1,7 @@
 import numpy as np
 from typing import TYPE_CHECKING
 from .types import CollisionMode, CollisionRelation
-from src.engine3d.component import Component
+from src.engine3d.component import Component, InspectorField, vector3
 from .group import ColliderGroup
 
 if TYPE_CHECKING:
@@ -10,6 +10,9 @@ if TYPE_CHECKING:
 
 class Collider(Component):
     """Base collider. Subclasses for types (Box, Sphere, Capsule). Contains Object3D ref."""
+    
+    # Inspector fields
+    center = InspectorField(vector3, default=(0.0, 0.0, 0.0), tooltip="Center offset of the collider")
 
     def __init__(self):
         super().__init__()
@@ -146,6 +149,9 @@ class Collider(Component):
 
 class BoxCollider(Collider):
     """Box/OBB collider (replaces old CUBE). Only size/center."""
+    
+    # Inspector fields
+    size = InspectorField(vector3, default=(1.0, 1.0, 1.0), tooltip="Size of the box collider")
 
     def __init__(self, center=None, size=None):
         super().__init__()
@@ -172,6 +178,9 @@ class BoxCollider(Collider):
 
 class SphereCollider(Collider):
     """Sphere collider. Only radius/center."""
+    
+    # Inspector fields
+    radius = InspectorField(float, default=1.0, min_value=0.01, max_value=1000.0, step=0.1, decimals=2, tooltip="Radius of the sphere collider")
 
     def __init__(self, center=None, radius=1.0):
         super().__init__()
@@ -201,6 +210,10 @@ class SphereCollider(Collider):
 
 class CapsuleCollider(Collider):
     """Capsule/cylinder collider. Only radius/height/center."""
+    
+    # Inspector fields
+    radius = InspectorField(float, default=1.0, min_value=0.01, max_value=1000.0, step=0.1, decimals=2, tooltip="Radius of the capsule collider")
+    height = InspectorField(float, default=1.0, min_value=0.01, max_value=1000.0, step=0.1, decimals=2, tooltip="Height of the capsule collider")
 
     def __init__(self, center=None, radius=1.0, height=1.0):
         super().__init__()

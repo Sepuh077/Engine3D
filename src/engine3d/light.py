@@ -4,7 +4,7 @@ Light3D - Lighting for 3D scenes.
 import numpy as np
 from typing import Tuple
 from .graphics.color import ColorType
-from .component import Component
+from .component import Component, InspectorField, color
 
 
 class Light3D(Component):
@@ -12,6 +12,10 @@ class Light3D(Component):
     Base class for all lights.
     """
     
+    # Inspector fields
+    color = InspectorField(color, default=(1.0, 1.0, 1.0), tooltip="Light color (RGB 0-1)")
+    intensity = InspectorField(float, default=1.0, min_value=0.0, max_value=1000.0, step=0.1, decimals=2, tooltip="Light intensity multiplier")
+
     def __init__(self, 
                  color: ColorType = (1.0, 1.0, 1.0),
                  intensity: float = 1.0):
@@ -39,6 +43,9 @@ class DirectionalLight3D(Light3D):
         light_go.transform.rotation = (-45, 30, 0)
     """
     
+    # Additional inspector fields for directional light
+    ambient = InspectorField(float, default=0.2, min_value=0.0, max_value=1.0, step=0.05, decimals=2, tooltip="Ambient light level (0-1)")
+
     def __init__(self, 
                  color: ColorType = (1.0, 1.0, 1.0),
                  intensity: float = 1.0,
@@ -101,6 +108,9 @@ class PointLight3D(Light3D):
     Point light that emits in all directions from a position.
     """
     
+    # Additional inspector fields for point light
+    range = InspectorField(float, default=50.0, min_value=0.1, max_value=1000.0, step=0.5, decimals=2, tooltip="Maximum light range")
+
     def __init__(self,
                  color: ColorType = (1.0, 1.0, 1.0),
                  intensity: float = 1.0,

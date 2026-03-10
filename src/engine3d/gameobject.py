@@ -134,11 +134,24 @@ class GameObject:
         self._update_end_of_frame_coroutines(Time.delta_time)
 
     def start_scripts(self):
-        """Call start() on all Script components that haven't been started yet."""
+        """Call awake() and start() on all Script components that haven't been started yet."""
         for comp in self.components:
-            if isinstance(comp, Script) and not comp._started:
-                comp.start()
-                comp._started = True
+            if isinstance(comp, Script):
+                # Call awake() first if not already awoken
+                if not comp._awoken:
+                    comp.awake()
+                    comp._awoken = True
+                # Then call start() if not already started
+                if not comp._started:
+                    comp.start()
+                    comp._started = True
+
+    def awake_scripts(self):
+        """Call awake() on all Script components that haven't been awoken yet."""
+        for comp in self.components:
+            if isinstance(comp, Script) and not comp._awoken:
+                comp.awake()
+                comp._awoken = True
 
     def get_component(self, component_type: Type[T]) -> Optional[T]:
         for comp in self.components:

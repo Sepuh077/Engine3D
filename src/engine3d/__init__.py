@@ -24,7 +24,7 @@ Example:
 from .window import Window3D
 from .scene import Scene3D
 from .gameobject import GameObject
-from .component import Component, Script, WaitForSeconds, WaitEndOfFrame, Time
+from .component import Component, Script, WaitForSeconds, WaitEndOfFrame, Time, InspectorField, InspectorFieldType, color, vector3
 from .transform import Transform
 from src.physics.rigidbody import Rigidbody
 from .object3d import Object3D, create_cube, create_sphere, create_plane
@@ -81,6 +81,10 @@ __all__ = [
     'WaitForSeconds',
     'WaitEndOfFrame',
     'Time',
+    'InspectorField',
+    'InspectorFieldType',
+    'color',
+    'vector3',
     'Transform',
     'Rigidbody',
     'Object3D',

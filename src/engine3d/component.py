@@ -1,10 +1,231 @@
-from typing import Optional, TYPE_CHECKING, Generator, Type, TypeVar, List
+from typing import Optional, TYPE_CHECKING, Generator, Type, TypeVar, List, Any, Generic, Tuple, Union
+from dataclasses import dataclass
+from enum import Enum
 
 if TYPE_CHECKING:
     from .gameobject import GameObject
 
 
 T = TypeVar('T', bound="Component")
+
+
+class InspectorFieldType(Enum):
+    """Types of inspector fields supported."""
+    FLOAT = "float"
+    INT = "int"
+    BOOL = "bool"
+    STRING = "string"
+    COLOR = "color"
+    VECTOR3 = "vector3"
+    ENUM = "enum"
+
+
+@dataclass
+class InspectorFieldInfo:
+    """
+    Metadata for an inspector field.
+    
+    Attributes:
+        name: Display name in the inspector
+        field_type: Type of the field (float, int, bool, etc.)
+        default_value: Default value for the field
+        min_value: Minimum value (for numeric types)
+        max_value: Maximum value (for numeric types)
+        step: Step increment (for numeric types)
+        decimals: Number of decimal places (for float types)
+        enum_options: List of (value, label) tuples for enum types
+        tooltip: Optional tooltip text
+    """
+    name: str
+    field_type: InspectorFieldType
+    default_value: Any
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    step: Optional[float] = None
+    decimals: Optional[int] = None
+    enum_options: Optional[List[Tuple[Any, str]]] = None
+    tooltip: Optional[str] = None
+
+
+class InspectorField:
+    """
+    Descriptor for defining inspector-visible fields on components.
+    
+    This allows fields to be used naturally in code while providing
+    metadata for the inspector UI.
+    
+    Example:
+        class MyComponent(Component):
+            speed = InspectorField(float, default=5.0, min_value=0.0, max_value=100.0)
+            enabled = InspectorField(bool, default=True)
+            color = InspectorField(color, default=(1.0, 1.0, 1.0))
+            
+            def update(self):
+                # Use speed as a regular float
+                self.transform.position[0] += self.speed * Time.delta_time
+    """
+    
+    def __init__(
+        self,
+        field_type: Union[type, InspectorFieldType],
+        default: Any = None,
+        *,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+        step: Optional[float] = None,
+        decimals: Optional[int] = None,
+        enum_options: Optional[List[Tuple[Any, str]]] = None,
+        tooltip: Optional[str] = None,
+    ):
+        """
+        Initialize an inspector field.
+        
+        Args:
+            field_type: The type of the field (float, int, bool, str, color, vector3)
+                       or an InspectorFieldType enum value.
+            default: Default value for the field (if None, a sensible default is used)
+            min_value: Minimum value for numeric types
+            max_value: Maximum value for numeric types
+            step: Step increment for numeric types
+            decimals: Decimal places for float types
+            enum_options: List of (value, label) tuples for enum types
+            tooltip: Tooltip text for the inspector
+        """
+        # Convert Python type to InspectorFieldType
+        if isinstance(field_type, InspectorFieldType):
+            self.field_type = field_type
+        elif field_type == float:
+            self.field_type = InspectorFieldType.FLOAT
+        elif field_type == int:
+            self.field_type = InspectorFieldType.INT
+        elif field_type == bool:
+            self.field_type = InspectorFieldType.BOOL
+        elif field_type == str:
+            self.field_type = InspectorFieldType.STRING
+        elif isinstance(field_type, _ColorType):
+            self.field_type = InspectorFieldType.COLOR
+        elif isinstance(field_type, _Vector3Type):
+            self.field_type = InspectorFieldType.VECTOR3
+        elif isinstance(field_type, type) and issubclass(field_type, Enum):
+            self.field_type = InspectorFieldType.ENUM
+            # Auto-generate enum options if not provided
+            if enum_options is None:
+                enum_options = [(e.value, e.name) for e in field_type]
+        else:
+            raise ValueError(f"Unsupported field type: {field_type}")
+        
+        # Set sensible default values if not provided
+        if default is None:
+            default = self._get_type_default()
+        
+        self.default_value = default
+        self.min_value = min_value
+        self.max_value = max_value
+        self.step = step
+        self.decimals = decimals
+        self.enum_options = enum_options
+        self.tooltip = tooltip
+        
+        # Will be set by __set_name__
+        self.name: Optional[str] = None
+        self.private_name: Optional[str] = None
+    
+    def _get_type_default(self) -> Any:
+        """Get the default value for this field type when none is specified."""
+        if self.field_type == InspectorFieldType.FLOAT:
+            return 0.0
+        elif self.field_type == InspectorFieldType.INT:
+            return 0
+        elif self.field_type == InspectorFieldType.BOOL:
+            return False
+        elif self.field_type == InspectorFieldType.STRING:
+            return ""
+        elif self.field_type == InspectorFieldType.COLOR:
+            return (1.0, 1.0, 1.0)  # White
+        elif self.field_type == InspectorFieldType.VECTOR3:
+            return (0.0, 0.0, 0.0)
+        elif self.field_type == InspectorFieldType.ENUM:
+            # Return first enum option value if available
+            if self.enum_options:
+                return self.enum_options[0][0]
+            return None
+        return None
+    
+    def __set_name__(self, owner: type, name: str):
+        """Called when the descriptor is assigned to a class attribute."""
+        self.name = name
+        self.private_name = f"_inspector_{name}"
+    
+    def __get__(self, obj: Any, objtype: Optional[type] = None) -> Any:
+        """Get the field value, returning the default if not set."""
+        if obj is None:
+            return self
+        
+        value = getattr(obj, self.private_name, None)
+        if value is None:
+            return self.default_value
+        return value
+    
+    def __set__(self, obj: Any, value: Any):
+        """Set the field value."""
+        setattr(obj, self.private_name, value)
+    
+    def get_info(self) -> InspectorFieldInfo:
+        """Get the metadata for this inspector field."""
+        return InspectorFieldInfo(
+            name=self.name or "",
+            field_type=self.field_type,
+            default_value=self.default_value,
+            min_value=self.min_value,
+            max_value=self.max_value,
+            step=self.step,
+            decimals=self.decimals,
+            enum_options=self.enum_options,
+            tooltip=self.tooltip,
+        )
+
+
+# Type markers for inspector fields (use these as field_type in InspectorField)
+class _ColorType:
+    """Marker type for color fields (RGB/RGBA tuple in 0-1 range)."""
+    pass
+
+class _Vector3Type:
+    """Marker type for vector3 fields (3D position/direction tuple)."""
+    pass
+
+# Export these as singletons for use in InspectorField
+color = _ColorType()
+vector3 = _Vector3Type()
+
+
+def inspector_field(
+    field_type: Union[type, InspectorFieldType],
+    default: Any = None,
+    *,
+    min_value: Optional[float] = None,
+    max_value: Optional[float] = None,
+    step: Optional[float] = None,
+    decimals: Optional[int] = None,
+    enum_options: Optional[List[Tuple[Any, str]]] = None,
+    tooltip: Optional[str] = None,
+) -> InspectorField:
+    """
+    Convenience function to create an InspectorField.
+    
+    This is equivalent to using InspectorField directly but may be more
+    readable in some contexts.
+    """
+    return InspectorField(
+        field_type,
+        default,
+        min_value=min_value,
+        max_value=max_value,
+        step=step,
+        decimals=decimals,
+        enum_options=enum_options,
+        tooltip=tooltip,
+    )
 
 
 class Time:
@@ -29,7 +250,7 @@ class Component:
 
     @property
     def transform(self):
-        if not self.game_object:
+        if self.game_object:
             return self.game_object.transform
         return None
 
@@ -47,6 +268,61 @@ class Component:
         if not self.game_object:
             return None
         return self.game_object.get_components(component_type)
+
+    @classmethod
+    def get_inspector_fields(cls) -> List[Tuple[str, InspectorFieldInfo]]:
+        """
+        Get all inspector fields defined on this component class.
+        
+        Returns a list of (attribute_name, InspectorFieldInfo) tuples for all
+        InspectorField descriptors defined on this class and its parents.
+        
+        Example:
+            for name, info in component.get_inspector_fields():
+                print(f"{name}: {info.field_type} = {info.default_value}")
+        """
+        fields = []
+        seen = set()
+        
+        # Walk through the MRO (Method Resolution Order) to get inherited fields
+        for klass in reversed(cls.__mro__):
+            for name, value in vars(klass).items():
+                if name in seen:
+                    continue
+                if isinstance(value, InspectorField):
+                    fields.append((name, value.get_info()))
+                    seen.add(name)
+        
+        return fields
+
+    def get_inspector_field_value(self, name: str) -> Any:
+        """
+        Get the current value of an inspector field by name.
+        
+        Args:
+            name: The name of the inspector field
+            
+        Returns:
+            The current value of the field
+        """
+        # Get the descriptor from the class
+        descriptor = getattr(type(self), name, None)
+        if isinstance(descriptor, InspectorField):
+            return getattr(self, name)
+        return None
+
+    def set_inspector_field_value(self, name: str, value: Any) -> None:
+        """
+        Set the value of an inspector field by name.
+        
+        Args:
+            name: The name of the inspector field
+            value: The new value to set
+        """
+        # Get the descriptor from the class
+        descriptor = getattr(type(self), name, None)
+        if isinstance(descriptor, InspectorField):
+            setattr(self, name, value)
 
 
 class WaitForSeconds:
@@ -95,7 +371,8 @@ class Script(Component):
     
     Similar to Unity's MonoBehaviour, scripts can be attached to GameObjects
     and receive lifecycle callbacks:
-    - start(): Called once when the object is created/initialized
+    - awake(): Called once when the script is first created (before start)
+    - start(): Called once when play mode begins
     - update(): Called every frame
     - on_collision_enter(other): Called when collision starts
     - on_collision_stay(other): Called every frame while colliding
@@ -103,8 +380,12 @@ class Script(Component):
     
     Example:
         class PlayerController(Script):
-            def start(self):
+            def awake(self):
+                # Initialize references here
                 self.speed = 5.0
+                
+            def start(self):
+                # Called when play begins
                 self.start_coroutine(self.delayed_action())
                 
             def update(self):
@@ -123,11 +404,20 @@ class Script(Component):
     def __init__(self):
         super().__init__()
         self._started = False
+        self._awoken = False
+    
+    def awake(self):
+        """
+        Called once when the script is first created, before start().
+        Use this for initialization that doesn't depend on other objects.
+        Override to set up initial state.
+        """
+        pass
     
     def start(self):
         """
-        Called once when the script is first initialized.
-        Override to set up initial state.
+        Called once when play mode begins.
+        Override to set up initial state that may depend on other objects.
         """
         pass
     

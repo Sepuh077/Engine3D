@@ -1,10 +1,17 @@
 import numpy as np
 
-from src.engine3d.component import Component, Time
+from src.engine3d.component import Component, Time, InspectorField
 
 
 class Rigidbody(Component):
     """Physics body for velocity, forces etc. Similar to Unity Rigidbody."""
+    
+    # Inspector fields
+    use_gravity = InspectorField(bool, default=True, tooltip="Whether gravity affects this body")
+    is_kinematic = InspectorField(bool, default=False, tooltip="If true, physics won't move this object")
+    is_static = InspectorField(bool, default=False, tooltip="If true, this object never moves")
+    mass = InspectorField(float, default=1.0, min_value=0.001, max_value=10000.0, step=0.1, decimals=2, tooltip="Mass of the rigidbody")
+    drag = InspectorField(float, default=0.0, min_value=0.0, max_value=1000.0, step=0.1, decimals=2, tooltip="Drag coefficient")
 
     def __init__(self, use_gravity: bool = True, is_kinematic: bool = False, is_static: bool = False, drag: float = 0.0):
         super().__init__()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Iterable
+from typing import Dict, Optional, Iterable, Any, List, Tuple
 
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets, QtOpenGLWidgets
@@ -11,6 +11,7 @@ from src.engine3d.scene import Scene3D
 from src.engine3d.window import Window3D
 from src.engine3d.gameobject import GameObject
 from src.engine3d.object3d import create_cube, create_sphere, create_plane, Object3D
+from src.engine3d.component import InspectorField, InspectorFieldType
 
 from .selection import EditorSelection
 from .viewport import ViewportWidget
@@ -90,6 +91,11 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._component_fields: list[QtWidgets.QWidget] = []
         self._components_dirty = True
 
+        # Scene file management
+        self._current_scene_path: Optional[Path] = None
+        self._scene_dirty = False
+        self._scene_name = "Untitled Scene"
+
         # Editor camera (separate from game camera)
         from src.engine3d.camera import Camera3D
         self._editor_camera = Camera3D()
@@ -110,6 +116,15 @@ class EditorWindow(QtWidgets.QMainWindow):
             'target': np.array([0.0, 0.0, 0.0], dtype=np.float32),
         }
 
+        # File watcher for code changes (hot reload)
+        self._file_watcher = QtCore.QFileSystemWatcher(self)
+        self._file_watcher.fileChanged.connect(self._on_script_file_changed)
+        self._watched_script_files: Dict[str, float] = {}  # path -> last modified time
+        self._script_reload_pending = False
+        self._debounce_timer = QtCore.QTimer(self)
+        self._debounce_timer.setSingleShot(True)
+        self._debounce_timer.timeout.connect(self._reload_script_components)
+
         self._build_layout()
         self._setup_files_panel()
         self._setup_hierarchy_panel()
@@ -117,10 +132,38 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._setup_toolbar()
         self._setup_timer()
         self._setup_camera_controls()
+        self._setup_shortcuts()
 
         QtCore.QTimer.singleShot(0, self._init_engine)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        # Check if scene has unsaved changes
+        if self._scene_dirty:
+            # Show save dialog
+            box = QtWidgets.QMessageBox(self)
+            box.setWindowTitle("Unsaved Changes")
+            box.setText(f"The scene '{self._scene_name}' has unsaved changes.")
+            box.setInformativeText("Do you want to save your changes?")
+            box.setStandardButtons(
+                QtWidgets.QMessageBox.StandardButton.Save |
+                QtWidgets.QMessageBox.StandardButton.Discard |
+                QtWidgets.QMessageBox.StandardButton.Cancel
+            )
+            box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Save)
+            
+            result = box.exec()
+            
+            if result == QtWidgets.QMessageBox.StandardButton.Save:
+                self._save_scene()
+                # If save failed, don't close
+                if self._scene_dirty:
+                    event.ignore()
+                    return
+            elif result == QtWidgets.QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            # Discard: just continue to close
+        
         if self._window:
             self._window.close()
         super().closeEvent(event)
@@ -174,6 +217,11 @@ class EditorWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(panel)
         layout.setContentsMargins(4, 4, 4, 4)
 
+        # Scene name label at the top
+        self._scene_label = QtWidgets.QLabel("Untitled Scene")
+        self._scene_label.setStyleSheet("font-weight: bold; font-size: 14px; padding: 4px;")
+        layout.addWidget(self._scene_label)
+
         button_row = QtWidgets.QHBoxLayout()
         add_button = QtWidgets.QPushButton("Add", panel)
         remove_button = QtWidgets.QPushButton("Remove", panel)
@@ -226,6 +274,9 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._select_object(child_obj)
         self._viewport.update()
         self._viewport.doneCurrent()
+        
+        # Mark scene as dirty
+        self._mark_scene_dirty()
 
     def _setup_inspector_panel(self) -> None:
         panel = QtWidgets.QWidget(self)
@@ -315,14 +366,69 @@ class EditorWindow(QtWidgets.QMainWindow):
             "Capsule Collider": lambda: self._add_component_to_selected(CapsuleCollider()),
             "Rigidbody": lambda: self._add_component_to_selected(Rigidbody()),
             "Particle System": lambda: self._add_component_to_selected(ParticleSystem()),
-            "Script": self._add_script_component,
         }
 
         for name, callback in actions.items():
             action = menu.addAction(name)
             action.triggered.connect(callback)
 
+        # Add separator before scripts
+        menu.addSeparator()
+        
+        # Scan for existing script files in the project
+        scripts = self._find_script_files()
+        if scripts:
+            scripts_menu = menu.addMenu("Scripts")
+            for script_path, class_name in scripts:
+                action = scripts_menu.addAction(class_name)
+                action.triggered.connect(lambda checked, p=script_path, c=class_name: self._add_existing_script(p, c))
+        
+        # Add "New Script..." option
+        new_script_action = menu.addAction("New Script...")
+        new_script_action.triggered.connect(self._add_script_component)
+
         menu.exec(QtGui.QCursor.pos())
+
+    def _find_script_files(self) -> List[Tuple[Path, str]]:
+        """
+        Scan the project directory for Python files containing Script subclasses.
+        
+        Returns:
+            List of (file_path, class_name) tuples
+        """
+        scripts = []
+        
+        # Scan all .py files in the project root
+        for py_file in self.project_root.rglob("*.py"):
+            # Skip files in hidden directories or __pycache__
+            if any(part.startswith('.') or part == '__pycache__' for part in py_file.parts):
+                continue
+            
+            # Skip the src directory (engine code)
+            if 'src' in py_file.parts:
+                continue
+            
+            try:
+                # Read the file and look for Script subclasses
+                content = py_file.read_text(encoding='utf-8')
+                
+                # Simple regex-like search for class definitions that inherit from Script
+                import re
+                pattern = r'class\s+(\w+)\s*\(\s*Script\s*\)'
+                matches = re.findall(pattern, content)
+                
+                for class_name in matches:
+                    scripts.append((py_file, class_name))
+                    
+            except Exception:
+                # Skip files that can't be read
+                continue
+        
+        return scripts
+
+    def _add_existing_script(self, file_path: Path, class_name: str) -> None:
+        """Load and add an existing script as a component."""
+        self._load_and_add_script(file_path, class_name)
 
     def _add_script_component(self) -> None:
         """Open dialog to create a new script component."""
@@ -369,13 +475,24 @@ class EditorWindow(QtWidgets.QMainWindow):
 
     def _create_script_file(self, file_path: Path, class_name: str) -> None:
         """Create a new script file with the template."""
-        script_template = f'''from src.engine3d import Script, Time
+        script_template = f'''from src.engine3d import Script, Time, InspectorField, color, vector3
 
 
 class {class_name}(Script):
     """
     Custom script component.
+    
+    Add InspectorField attributes to show them in the editor inspector.
+    Example:
+        speed = InspectorField(float, default=5.0, min_value=0.0, max_value=100.0)
+        health = InspectorField(float, default=100.0, min_value=0.0, max_value=100.0)
+        is_active = InspectorField(bool, default=True)
+        player_color = InspectorField(color, default=(1.0, 0.0, 0.0))
+        spawn_pos = InspectorField(vector3, default=(0.0, 0.0, 0.0))
     """
+    
+    # Example inspector fields (uncomment to use):
+    # speed = InspectorField(float, default=5.0, min_value=0.0, max_value=100.0, tooltip="Movement speed")
     
     def start(self):
         """
@@ -403,16 +520,43 @@ class {class_name}(Script):
             if project_root not in sys.path:
                 sys.path.insert(0, project_root)
 
-            # Load the module
-            spec = importlib.util.spec_from_file_location(
-                file_path.stem, str(file_path)
-            )
-            if spec is None or spec.loader is None:
-                raise ImportError(f"Could not load script from {file_path}")
+            # Create a unique module name to allow reloading
+            # Use the relative path from project root to create a unique identifier
+            try:
+                relative_path = file_path.relative_to(self.project_root)
+                module_name = '.'.join(relative_path.with_suffix('').parts)
+            except ValueError:
+                module_name = file_path.stem
+            
+            # Ensure unique module name (in case of conflicts)
+            base_module_name = module_name
+            counter = 1
+            while module_name in sys.modules:
+                # If module already exists, check if it's the same file
+                existing_module = sys.modules[module_name]
+                existing_path = getattr(existing_module, '__file__', None)
+                if existing_path and Path(existing_path).resolve() == file_path.resolve():
+                    # Same file, try to reload it
+                    import importlib
+                    try:
+                        importlib.reload(existing_module)
+                        module = existing_module
+                        break
+                    except Exception:
+                        pass
+                module_name = f"{base_module_name}_{counter}"
+                counter += 1
+            else:
+                # Load the module fresh
+                spec = importlib.util.spec_from_file_location(
+                    module_name, str(file_path)
+                )
+                if spec is None or spec.loader is None:
+                    raise ImportError(f"Could not load script from {file_path}")
 
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[file_path.stem] = module
-            spec.loader.exec_module(module)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
 
             # Get the class from the module
             if not hasattr(module, class_name):
@@ -425,6 +569,8 @@ class {class_name}(Script):
             self._add_component_to_selected(script_instance)
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             QtWidgets.QMessageBox.critical(
                 self, "Error", f"Failed to load script:\n{e}"
             )
@@ -434,6 +580,147 @@ class {class_name}(Script):
         if not obj:
             return
         obj.add_component(component)
+        self._components_dirty = True
+        self._update_inspector_fields(force_components=True)
+        self._viewport.update()
+        self._mark_scene_dirty()
+        
+        # Watch the script file for changes if it's a Script component
+        self._watch_script_component(component)
+
+    def _watch_script_component(self, component) -> None:
+        """Add a script component's source file to the file watcher."""
+        from src.engine3d.component import Script
+        
+        if not isinstance(component, Script):
+            return
+        
+        # Get the source file of the component's class
+        import inspect
+        try:
+            source_file = inspect.getfile(type(component))
+            if source_file and source_file.endswith('.py'):
+                # Check if it's in the project directory (not engine code)
+                source_path = Path(source_file).resolve()
+                try:
+                    source_path.relative_to(self.project_root)
+                    # It's a project file, watch it
+                    if source_file not in self._watched_script_files:
+                        self._file_watcher.addPath(source_file)
+                        self._watched_script_files[source_file] = source_path.stat().st_mtime
+                except ValueError:
+                    # Not in project directory, skip
+                    pass
+        except (TypeError, OSError):
+            # Built-in or compiled module, skip
+            pass
+
+    def _on_script_file_changed(self, path: str) -> None:
+        """Handle when a watched script file changes."""
+        import time
+        
+        # Check if the file still exists
+        if not Path(path).exists():
+            return
+        
+        # Get current modification time
+        try:
+            current_mtime = Path(path).stat().st_mtime
+        except OSError:
+            return
+        
+        # Check if this is a real change (not just a save trigger)
+        last_mtime = self._watched_script_files.get(path, 0)
+        if current_mtime <= last_mtime:
+            return
+        
+        self._watched_script_files[path] = current_mtime
+        
+        # Re-add the file to the watcher (some editors delete and recreate)
+        if path not in self._file_watcher.files():
+            self._file_watcher.addPath(path)
+        
+        # Debounce the reload to handle editors that make multiple saves
+        if not self._debounce_timer.isActive():
+            self._debounce_timer.start(500)  # 500ms debounce
+
+    def _reload_script_components(self) -> None:
+        """Reload all script components in the scene when code changes."""
+        import importlib
+        import sys
+        import inspect
+        
+        # Don't reload during play mode
+        if self._playing:
+            return
+        
+        # Collect all script components and their source files
+        scripts_by_file: Dict[str, List[tuple]] = {}  # file -> [(component, gameobject), ...]
+        
+        for obj in self._scene.objects:
+            for comp in obj.components:
+                from src.engine3d.component import Script
+                if isinstance(comp, Script):
+                    try:
+                        source_file = inspect.getfile(type(comp))
+                        if source_file in self._watched_script_files:
+                            if source_file not in scripts_by_file:
+                                scripts_by_file[source_file] = []
+                            scripts_by_file[source_file].append((comp, obj))
+                    except (TypeError, OSError):
+                        continue
+        
+        if not scripts_by_file:
+            return
+        
+        # Reload each affected module
+        reloaded_modules = set()
+        for source_file, components in scripts_by_file.items():
+            try:
+                # Find the module for this source file
+                module_name = None
+                for name, module in sys.modules.items():
+                    if hasattr(module, '__file__') and module.__file__ == source_file:
+                        module_name = name
+                        break
+                
+                if module_name and module_name not in reloaded_modules:
+                    # Reload the module
+                    importlib.reload(sys.modules[module_name])
+                    reloaded_modules.add(module_name)
+                    
+                    # Get the new class from the reloaded module
+                    old_class = type(components[0][0])
+                    new_class = getattr(sys.modules[module_name], old_class.__name__, None)
+                    
+                    if new_class and new_class is not old_class:
+                        # Update all instances of this class
+                        for old_comp, game_obj in components:
+                            # Store the old values
+                            old_values = {}
+                            for name, info in old_comp.get_inspector_fields():
+                                old_values[name] = old_comp.get_inspector_field_value(name)
+                            
+                            # Create new instance
+                            new_comp = new_class()
+                            
+                            # Copy over the game_object reference
+                            new_comp.game_object = game_obj
+                            
+                            # Restore old values
+                            for name, value in old_values.items():
+                                new_comp.set_inspector_field_value(name, value)
+                            
+                            # Replace the component in the game object
+                            idx = game_obj.components.index(old_comp)
+                            game_obj.components[idx] = new_comp
+                            
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"Error reloading script {source_file}: {e}")
+        
+        # Mark components as dirty to refresh the inspector
         self._components_dirty = True
         self._update_inspector_fields(force_components=True)
         self._viewport.update()
@@ -666,6 +953,10 @@ class {class_name}(Script):
         self._window.show_editor_overlays = True
         self._window.editor_show_camera = True
         self._window.active_camera_override = self._editor_camera
+        
+        # Initialize scene management
+        self._init_scene_file()
+        
         self._window.show_scene(self._scene)
 
         self._viewport.resized.connect(self._on_viewport_resized)
@@ -681,6 +972,137 @@ class {class_name}(Script):
 
         self._viewport.render_callback = self._render_frame
         self._timer.start()
+
+    def _init_scene_file(self) -> None:
+        """Initialize the Scenes folder and main scene file."""
+        scenes_dir = self.project_root / "Scenes"
+        main_scene_path = scenes_dir / "main.scene"
+        
+        # Create Scenes directory if it doesn't exist
+        if not scenes_dir.exists():
+            scenes_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Load or create main.scene
+        if main_scene_path.exists():
+            self._load_scene(main_scene_path)
+        else:
+            # Create empty main scene file
+            self._current_scene_path = main_scene_path
+            self._scene_name = "main"
+            self._scene.editor_label = "main"
+            self._save_scene()  # Save the empty scene
+            self._scene_dirty = False  # Not dirty since we just created it
+        
+        self._update_scene_label()
+
+    def _load_scene(self, path: Path) -> None:
+        """Load a scene from a file."""
+        try:
+            self._viewport.makeCurrent()
+            
+            # Clear current scene
+            if self._window:
+                self._window.clear_objects()
+            
+            # Load the scene
+            from src.editor.scene import EditorScene
+            self._scene = EditorScene.load(str(path))
+            self._current_scene_path = path
+            self._scene_name = path.stem
+            self._scene.editor_label = self._scene_name
+            self._scene_dirty = False
+            
+            # Show the loaded scene
+            if self._window:
+                self._window.show_scene(self._scene)
+            
+            self._refresh_hierarchy()
+            self._select_object(None)
+            self._viewport.update()
+            self._viewport.doneCurrent()
+            
+            self._update_scene_label()
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load scene:\n{e}")
+
+    def _save_scene(self) -> None:
+        """Save the current scene to its file."""
+        if self._current_scene_path is None:
+            self._save_scene_as()
+            return
+        
+        try:
+            self._scene.save(str(self._current_scene_path))
+            self._scene_dirty = False
+            self._update_scene_label()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save scene:\n{e}")
+
+    def _save_scene_as(self) -> None:
+        """Save the current scene to a new file."""
+        scenes_dir = self.project_root / "Scenes"
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Scene",
+            str(scenes_dir / "new_scene.scene"),
+            "Scene Files (*.scene)"
+        )
+        
+        if file_path:
+            path = Path(file_path)
+            try:
+                self._scene.save(str(path))
+                self._current_scene_path = path
+                self._scene_name = path.stem
+                self._scene.editor_label = self._scene_name
+                self._scene_dirty = False
+                self._update_scene_label()
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save scene:\n{e}")
+
+    def _mark_scene_dirty(self) -> None:
+        """Mark the scene as having unsaved changes."""
+        if not self._scene_dirty:
+            self._scene_dirty = True
+            self._update_scene_label()
+
+    def _update_scene_label(self) -> None:
+        """Update the scene name label in the hierarchy panel."""
+        if hasattr(self, '_scene_label'):
+            display_name = self._scene_name
+            if self._scene_dirty:
+                display_name = f"*{self._scene_name}"
+            self._scene_label.setText(display_name)
+
+    def _setup_shortcuts(self) -> None:
+        """Setup keyboard shortcuts."""
+        # Ctrl+S to save
+        save_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+S"), self)
+        save_shortcut.activated.connect(self._save_scene)
+        
+        # Ctrl+Shift+S to save as
+        save_as_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+S"), self)
+        save_as_shortcut.activated.connect(self._save_scene_as)
+        
+        # Ctrl+O to open scene
+        open_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+O"), self)
+        open_shortcut.activated.connect(self._open_scene_dialog)
+
+    def _open_scene_dialog(self) -> None:
+        """Open a dialog to select a scene to load."""
+        scenes_dir = self.project_root / "Scenes"
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Scene",
+            str(scenes_dir),
+            "Scene Files (*.scene)"
+        )
+        
+        if file_path:
+            self._load_scene(Path(file_path))
 
     def _render_frame(self) -> None:
         """Called by ViewportWidget.paintGL() to render the frame."""
@@ -1014,6 +1436,7 @@ class {class_name}(Script):
         self._select_object(obj)
         self._viewport.update()
         self._viewport.doneCurrent()
+        self._mark_scene_dirty()
 
     def _remove_selected(self) -> None:
         if not self._selection.game_object:
@@ -1028,6 +1451,7 @@ class {class_name}(Script):
             self._window.editor_selected_object = None
         self._viewport.update()
         self._viewport.doneCurrent()
+        self._mark_scene_dirty()
 
     def _on_hierarchy_selection(self) -> None:
         items = self._hierarchy_tree.selectedItems()
@@ -1113,6 +1537,7 @@ class {class_name}(Script):
         if self._window:
             self._window.editor_selected_object = obj
         self._viewport.update()
+        self._mark_scene_dirty()
 
     def _nudge_selected(self, delta) -> None:
         obj = self._selection.game_object
@@ -1182,7 +1607,15 @@ class {class_name}(Script):
         for comp in obj.components:
             if comp is obj.transform:
                 continue
-            if isinstance(comp, Light3D):
+            
+            # Get inspector fields from the component
+            inspector_fields = comp.get_inspector_fields()
+            
+            if inspector_fields:
+                # Build fields dynamically using InspectorField metadata
+                box = self._create_inspector_fields_for_component(comp, inspector_fields)
+            elif isinstance(comp, Light3D):
+                # Fallback for old-style components (shouldn't happen if properly updated)
                 if isinstance(comp, DirectionalLight3D):
                     box = self._create_directional_light_fields(comp)
                 elif isinstance(comp, PointLight3D):
@@ -1208,6 +1641,238 @@ class {class_name}(Script):
             self._ensure_component_box(box)
 
         self._components_dirty = False
+
+    def _create_inspector_fields_for_component(self, comp, inspector_fields: List) -> QtWidgets.QGroupBox:
+        """
+        Create inspector UI for a component based on its InspectorField definitions.
+        
+        Args:
+            comp: The component instance
+            inspector_fields: List of (name, InspectorFieldInfo) tuples
+            
+        Returns:
+            A QGroupBox containing the inspector fields
+        """
+        box = QtWidgets.QGroupBox(comp.__class__.__name__)
+        layout = QtWidgets.QFormLayout(box)
+        layout.setContentsMargins(6, 6, 6, 6)
+        
+        # Store field widgets for updating
+        field_widgets = {}
+        
+        for field_name, field_info in inspector_fields:
+            widget = self._create_widget_for_field(comp, field_name, field_info)
+            if widget:
+                layout.addRow(self._format_field_label(field_name), widget)
+                field_widgets[field_name] = widget
+        
+        box._inspector_field_widgets = field_widgets
+        return box
+
+    def _format_field_label(self, field_name: str) -> str:
+        """Format a field name as a human-readable label."""
+        # Convert snake_case to Title Case
+        words = field_name.replace('_', ' ').split()
+        return ' '.join(word.capitalize() for word in words)
+
+    def _create_widget_for_field(self, comp, field_name: str, field_info) -> QtWidgets.QWidget:
+        """
+        Create the appropriate widget for an inspector field based on its type.
+        
+        Args:
+            comp: The component instance
+            field_name: The name of the field
+            field_info: InspectorFieldInfo instance
+            
+        Returns:
+            A QWidget for editing the field value
+        """
+        current_value = comp.get_inspector_field_value(field_name)
+        
+        if field_info.field_type == InspectorFieldType.FLOAT:
+            return self._create_float_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.INT:
+            return self._create_int_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.BOOL:
+            return self._create_bool_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.STRING:
+            return self._create_string_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.COLOR:
+            return self._create_color_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.VECTOR3:
+            return self._create_vector3_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.ENUM:
+            return self._create_enum_field(comp, field_name, field_info, current_value)
+        else:
+            # Fallback: just show a label
+            label = QtWidgets.QLabel(str(current_value))
+            return label
+
+    def _create_float_field(self, comp, field_name: str, field_info, current_value: float) -> QtWidgets.QDoubleSpinBox:
+        """Create a spinbox for a float field."""
+        spinbox = QtWidgets.QDoubleSpinBox()
+        min_val = field_info.min_value if field_info.min_value is not None else -10000.0
+        max_val = field_info.max_value if field_info.max_value is not None else 10000.0
+        step = field_info.step if field_info.step is not None else 0.1
+        decimals = field_info.decimals if field_info.decimals is not None else 2
+        
+        spinbox.setRange(min_val, max_val)
+        spinbox.setSingleStep(step)
+        spinbox.setDecimals(decimals)
+        spinbox.setValue(float(current_value) if current_value is not None else field_info.default_value)
+        
+        if field_info.tooltip:
+            spinbox.setToolTip(field_info.tooltip)
+        
+        spinbox.valueChanged.connect(lambda val, c=comp, fn=field_name: self._on_inspector_field_changed(c, fn, val))
+        return spinbox
+
+    def _create_int_field(self, comp, field_name: str, field_info, current_value: int) -> QtWidgets.QSpinBox:
+        """Create a spinbox for an int field."""
+        spinbox = QtWidgets.QSpinBox()
+        min_val = int(field_info.min_value) if field_info.min_value is not None else -10000
+        max_val = int(field_info.max_value) if field_info.max_value is not None else 10000
+        step = int(field_info.step) if field_info.step is not None else 1
+        
+        spinbox.setRange(min_val, max_val)
+        spinbox.setSingleStep(step)
+        spinbox.setValue(int(current_value) if current_value is not None else field_info.default_value)
+        
+        if field_info.tooltip:
+            spinbox.setToolTip(field_info.tooltip)
+        
+        spinbox.valueChanged.connect(lambda val, c=comp, fn=field_name: self._on_inspector_field_changed(c, fn, val))
+        return spinbox
+
+    def _create_bool_field(self, comp, field_name: str, field_info, current_value: bool) -> QtWidgets.QCheckBox:
+        """Create a checkbox for a bool field."""
+        checkbox = QtWidgets.QCheckBox()
+        checkbox.setChecked(bool(current_value) if current_value is not None else field_info.default_value)
+        
+        if field_info.tooltip:
+            checkbox.setToolTip(field_info.tooltip)
+        
+        checkbox.toggled.connect(lambda val, c=comp, fn=field_name: self._on_inspector_field_changed(c, fn, val))
+        return checkbox
+
+    def _create_string_field(self, comp, field_name: str, field_info, current_value: str) -> QtWidgets.QLineEdit:
+        """Create a line edit for a string field."""
+        line_edit = QtWidgets.QLineEdit()
+        line_edit.setText(str(current_value) if current_value is not None else str(field_info.default_value))
+        
+        if field_info.tooltip:
+            line_edit.setToolTip(field_info.tooltip)
+        
+        line_edit.editingFinished.connect(lambda c=comp, fn=field_name, le=line_edit: self._on_inspector_field_changed(c, fn, le.text()))
+        return line_edit
+
+    def _create_color_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QWidget:
+        """Create a color editor widget for a color field."""
+        color = np.array(current_value if current_value is not None else field_info.default_value, dtype=np.float32)
+        if color.max() <= 1.0:
+            color = (color * 255.0).astype(int)
+        else:
+            color = np.array(color).astype(int)
+        color = np.clip(color, 0, 255)
+
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        rows = []
+        for label, idx in (("R", 0), ("G", 1), ("B", 2)):
+            row = self._make_color_slider(label, int(color[idx]) if idx < len(color) else 128, 
+                                          lambda value, c=comp, fn=field_name, w=widget: self._on_color_field_changed(c, fn, w))
+            layout.addWidget(row)
+            rows.append(row)
+        widget._color_rows = rows
+        
+        if field_info.tooltip:
+            widget.setToolTip(field_info.tooltip)
+        
+        return widget
+
+    def _create_vector3_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QWidget:
+        """Create a vector3 editor widget for a vector3 field."""
+        value = current_value if current_value is not None else field_info.default_value
+        
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        fields = []
+        
+        for i, val in enumerate(value):
+            spin = self._make_spinbox(
+                field_info.min_value if field_info.min_value is not None else -10000.0,
+                field_info.max_value if field_info.max_value is not None else 10000.0,
+                field_info.step if field_info.step is not None else 0.1,
+                field_info.decimals if field_info.decimals is not None else 2
+            )
+            spin.setValue(float(val))
+            spin.valueChanged.connect(lambda v, c=comp, fn=field_name, w=widget: self._on_vector3_field_changed(c, fn, w))
+            layout.addWidget(spin)
+            fields.append(spin)
+        
+        widget._vector_fields = fields
+        
+        if field_info.tooltip:
+            widget.setToolTip(field_info.tooltip)
+        
+        return widget
+
+    def _create_enum_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QComboBox:
+        """Create a combo box for an enum field."""
+        combo = QtWidgets.QComboBox()
+        
+        if field_info.enum_options:
+            for value, label in field_info.enum_options:
+                combo.addItem(label, value)
+            
+            # Set current value
+            if current_value is not None:
+                index = combo.findData(current_value)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+        
+        if field_info.tooltip:
+            combo.setToolTip(field_info.tooltip)
+        
+        combo.currentIndexChanged.connect(lambda idx, c=comp, fn=field_name, cb=combo: self._on_inspector_field_changed(c, fn, cb.currentData()))
+        return combo
+
+    def _on_inspector_field_changed(self, comp, field_name: str, value: Any) -> None:
+        """Handle when an inspector field value changes."""
+        comp.set_inspector_field_value(field_name, value)
+        self._viewport.update()
+        self._mark_scene_dirty()
+
+    def _on_color_field_changed(self, comp, field_name: str, widget: QtWidgets.QWidget) -> None:
+        """Handle when a color field value changes."""
+        if widget is None:
+            return
+        channels = []
+        for row in widget._color_rows:
+            row._value_label.setText(str(row._color_slider.value()))
+            channels.append(row._color_slider.value() / 255.0)
+        comp.set_inspector_field_value(field_name, tuple(channels))
+        self._viewport.update()
+        self._mark_scene_dirty()
+
+    def _on_vector3_field_changed(self, comp, field_name: str, widget: QtWidgets.QWidget) -> None:
+        """Handle when a vector3 field value changes."""
+        if widget is None:
+            return
+        values = tuple(field.value() for field in widget._vector_fields)
+        comp.set_inspector_field_value(field_name, values)
+        
+        # Special handling for collider center changes
+        from src.physics.collider import Collider
+        if isinstance(comp, Collider):
+            comp._transform_dirty = True
+        
+        self._viewport.update()
+        self._mark_scene_dirty()
 
     def _refresh_component_fields(self, obj: GameObject) -> None:
         from src.engine3d.light import Light3D
@@ -1241,7 +1906,10 @@ class {class_name}(Script):
 
             self._update_component_box_title(box, comp.__class__.__name__)
 
-            if isinstance(comp, Light3D):
+            # Check if the component uses the new inspector field system
+            if hasattr(box, "_inspector_field_widgets"):
+                self._refresh_inspector_field_widgets(box, comp)
+            elif isinstance(comp, Light3D):
                 self._refresh_light_fields(box, comp)
             elif isinstance(comp, Collider):
                 self._refresh_collider_fields(box, comp)
@@ -1253,6 +1921,31 @@ class {class_name}(Script):
         if comp_index + 1 != len(component_boxes):
             self._components_dirty = True
             self._build_component_fields(obj)
+
+    def _refresh_inspector_field_widgets(self, box: QtWidgets.QGroupBox, comp) -> None:
+        """Refresh the values of inspector field widgets for a component."""
+        field_widgets = getattr(box, "_inspector_field_widgets", {})
+        
+        for field_name, widget in field_widgets.items():
+            current_value = comp.get_inspector_field_value(field_name)
+            
+            if isinstance(widget, QtWidgets.QDoubleSpinBox):
+                if not widget.hasFocus():
+                    widget.setValue(float(current_value) if current_value is not None else 0.0)
+            elif isinstance(widget, QtWidgets.QSpinBox):
+                if not widget.hasFocus():
+                    widget.setValue(int(current_value) if current_value is not None else 0)
+            elif isinstance(widget, QtWidgets.QCheckBox):
+                widget.setChecked(bool(current_value) if current_value is not None else False)
+            elif isinstance(widget, QtWidgets.QLineEdit):
+                if not widget.hasFocus():
+                    widget.setText(str(current_value) if current_value is not None else "")
+            elif hasattr(widget, "_color_rows"):
+                # Color widget
+                self._refresh_color_editor(widget, current_value)
+            elif hasattr(widget, "_vector_fields"):
+                # Vector3 widget
+                self._refresh_vector_row(widget, current_value)
 
     def _create_object3d_fields(self, comp: 'Object3D') -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox(comp.__class__.__name__)

@@ -147,8 +147,8 @@ class Scene3D:
             if obj3d_comp:
                 self.window._ensure_mesh(obj3d_comp)
         
-        # Start scripts on the new object
-        go.start_scripts()
+        # Awake scripts on the new object (start is called when play mode begins)
+        go.awake_scripts()
         
         # Register cameras
         for cam in go.get_components(Camera3D):
@@ -388,7 +388,7 @@ class Scene3D:
             scene.add_object(light_obj)
 
         for obj in scene.objects:
-            obj.start_scripts()
+            obj.awake_scripts()
 
         return scene
 
