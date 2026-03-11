@@ -3,9 +3,10 @@ Camera3D - First-person or orbit camera for 3D scenes.
 """
 import numpy as np
 import math
-from typing import Tuple, TYPE_CHECKING
+from typing import Tuple, TYPE_CHECKING, Union
 
 from .component import Component
+from src.types import Vector3
 
 if TYPE_CHECKING:
     from .gameobject import GameObject
@@ -42,28 +43,28 @@ class Camera3D(Component):
             "tan_x": None,
             "tan_y": None,
         }
-        self._target_cache = np.array([0, 0, 0], dtype=np.float32)
+        self._target_cache = Vector3.zero()
 
     @property
-    def position(self) -> np.ndarray:
+    def position(self) -> Vector3:
         """Get camera position from transform."""
         if self.game_object:
             return self.game_object.transform.position
-        return np.zeros(3, dtype=np.float32)
+        return Vector3.zero()
     
     @position.setter
-    def position(self, value: Tuple[float, float, float]):
+    def position(self, value: Union[Tuple[float, float, float], Vector3]):
         """Set camera position via transform."""
         if self.game_object:
             self.game_object.transform.position = value
     
     @property
-    def target(self) -> np.ndarray:
+    def target(self) -> Vector3:
         """Get camera target (look at)."""
         return self._target_cache
     
     @target.setter
-    def target(self, value: Tuple[float, float, float]):
+    def target(self, value: Union[Tuple[float, float, float], Vector3]):
         """Set camera target (look at)."""
         self.look_at(value)
 
@@ -74,9 +75,9 @@ class Camera3D(Component):
             return self.game_object.transform.forward
         return np.array([0, 0, -1], dtype=np.float32)
 
-    def look_at(self, target: Tuple[float, float, float]):
+    def look_at(self, target: Union[Tuple[float, float, float], Vector3]):
         """Point camera at a target."""
-        self._target_cache = np.array(target, dtype=np.float32)
+        self._target_cache = Vector3(target)
         if self.game_object:
             self.game_object.transform.look_at(target)
 
@@ -88,23 +89,23 @@ class Camera3D(Component):
         pos = self.position
         offset = pos - target
         
-        radius = np.linalg.norm(offset)
+        radius = offset.magnitude
         if radius < 0.001:
             return
             
-        yaw = math.atan2(offset[0], offset[2])
-        pitch = math.asin(np.clip(offset[1] / radius, -1.0, 1.0))
+        yaw = math.atan2(offset.x, offset.z)
+        pitch = math.asin(np.clip(offset.y / radius, -1.0, 1.0))
         
         yaw += dx
         pitch += dy
         
         pitch = np.clip(pitch, -math.pi/2 + 0.01, math.pi/2 - 0.01)
         
-        new_offset = np.array([
+        new_offset = Vector3(
             radius * math.sin(yaw) * math.cos(pitch),
             radius * math.sin(pitch),
             radius * math.cos(yaw) * math.cos(pitch)
-        ], dtype=np.float32)
+        )
         
         self.position = target + new_offset
         self.look_at(target)
@@ -117,11 +118,11 @@ class Camera3D(Component):
         pos = self.position
         offset = pos - target
         
-        radius = np.linalg.norm(offset)
+        radius = offset.magnitude
         if radius < 0.001:
-            direction = np.array([0, 0, 1], dtype=np.float32)
+            direction = Vector3.forward()
         else:
-            direction = offset / radius
+            direction = offset.normalized
             
         new_radius = max(0.1, radius + amount)
         self.position = target + direction * new_radius
@@ -130,22 +131,22 @@ class Camera3D(Component):
     def move(self, dx: float = 0, dy: float = 0, dz: float = 0):
         """Move camera by offset."""
         if self.game_object:
-            self.game_object.transform.position += np.array([dx, dy, dz], dtype=np.float32)
+            self.game_object.transform.position = self.game_object.transform.position + Vector3(dx, dy, dz)
 
     def move_forward(self, distance: float):
         """Move camera forward."""
         if self.game_object:
-            self.game_object.transform.position += self.forward * distance
+            self.game_object.transform.position = self.game_object.transform.position + self.forward * distance
 
     def move_right(self, distance: float):
         """Move camera right."""
         if self.game_object:
-            self.game_object.transform.position += self.right * distance
+            self.game_object.transform.position = self.game_object.transform.position + self.right * distance
 
     def move_up(self, distance: float):
         """Move camera up."""
         if self.game_object:
-            self.game_object.transform.position += self.up * distance
+            self.game_object.transform.position = self.game_object.transform.position + self.up * distance
 
     @property
     def right(self) -> np.ndarray:

@@ -331,10 +331,22 @@ class Scene3D:
         return cls._from_scene_dict(data)
 
     def _to_scene_dict(self) -> dict:
+        # Handle Vector3 or numpy array for camera position/target
+        cam_pos = self.camera.position
+        cam_target = self.camera.target
+        if hasattr(cam_pos, 'to_list'):
+            cam_pos = cam_pos.to_list()
+        elif hasattr(cam_pos, 'tolist'):
+            cam_pos = cam_pos.tolist()
+        if hasattr(cam_target, 'to_list'):
+            cam_target = cam_target.to_list()
+        elif hasattr(cam_target, 'tolist'):
+            cam_target = cam_target.tolist()
+            
         return {
             "camera": {
-                "position": self.camera.position.tolist(),
-                "target": self.camera.target.tolist(),
+                "position": cam_pos,
+                "target": cam_target,
                 "fov": self.camera.fov,
                 "near": self.camera.near,
                 "far": self.camera.far,

@@ -1,12 +1,16 @@
-from typing import Optional, TYPE_CHECKING, Generator, Type, TypeVar, List, Any, Generic, Tuple, Union
+from typing import Optional, TYPE_CHECKING, Generator, Type, TypeVar, List, Any, Generic, Tuple, Union, overload
 from dataclasses import dataclass
 from enum import Enum
+
+from src.types import Color as ColorType
+from src.types import Vector3
 
 if TYPE_CHECKING:
     from .gameobject import GameObject
 
 
 T = TypeVar('T', bound="Component")
+_T = TypeVar('_T')
 
 
 class InspectorFieldType(Enum):
@@ -20,6 +24,7 @@ class InspectorFieldType(Enum):
     ENUM = "enum"
     LIST = "list"
     COMPONENT_REF = "component_ref"
+    GAMEOBJECT_REF = "gameobject_ref"
 
 
 @dataclass
@@ -38,7 +43,6 @@ class InspectorFieldInfo:
         enum_options: List of (value, label) tuples for enum types
         tooltip: Optional tooltip text
         list_item_type: The type of items in a list field (for LIST type)
-        component_type: The component class type (for COMPONENT_REF type)
     """
     name: str
     field_type: InspectorFieldType
@@ -50,32 +54,54 @@ class InspectorFieldInfo:
     enum_options: Optional[List[Tuple[Any, str]]] = None
     tooltip: Optional[str] = None
     list_item_type: Optional[Union[type, InspectorFieldType]] = None
-    component_type: Optional[type] = None
 
 
-class InspectorField:
+class InspectorField(Generic[_T]):
     """
     Descriptor for defining inspector-visible fields on components.
     
     This allows fields to be used naturally in code while providing
     metadata for the inspector UI.
     
+    Supported types:
+        - float, int, bool, str: Basic types
+        - list: List of items (use list_item_type to specify item type)
+        - Color: RGB/RGBA tuple in 0-1 range
+        - Vector3: 3D position/direction
+        - GameObject: Reference to a GameObject
+        - Component subclasses: Reference to a component
+        - Enum subclasses: Automatically generates dropdown options
+    
     Example:
-        class MyComponent(Component):
+        from src.engine3d import Script, InspectorField, Color, Vector3, GameObject
+        
+        class MyScript(Script):
+            # Basic types
             speed = InspectorField(float, default=5.0, min_value=0.0, max_value=100.0)
+            health = InspectorField(int, default=100)
             enabled = InspectorField(bool, default=True)
-            color = InspectorField(color, default=(1.0, 1.0, 1.0))
-            targets = InspectorField(list, default=[], list_item_type=float)
-            player_transform = InspectorField(Component, default=None, component_type=Transform)
+            name = InspectorField(str, default="Player")
+            
+            # Color and Vector3
+            player_color = InspectorField(Color, default=(1.0, 0.0, 0.0))
+            spawn_pos = InspectorField(Vector3, default=(0.0, 0.0, 0.0))
+            
+            # List fields
+            scores = InspectorField(list, default=[], list_item_type=int)
+            
+            # Component reference
+            target_transform = InspectorField(Transform, default=None)
+            
+            # GameObject reference
+            target_object = InspectorField(GameObject, default=None)
             
             def update(self):
-                # Use speed as a regular float
                 self.transform.position[0] += self.speed * Time.delta_time
     """
     
     def __init__(
         self,
-        field_type: Union[type, InspectorFieldType],
+        field_type: Union[Type[_T], type, InspectorFieldType],
         default: Any = None,
         *,
         min_value: Optional[float] = None,
@@ -85,14 +111,13 @@ class InspectorField:
         enum_options: Optional[List[Tuple[Any, str]]] = None,
         tooltip: Optional[str] = None,
         list_item_type: Optional[Union[type, InspectorFieldType]] = None,
-        component_type: Optional[type] = None,
     ):
         """
         Initialize an inspector field.
         
         Args:
-            field_type: The type of the field (float, int, bool, str, color, vector3, list, Component)
-                       or an InspectorFieldType enum value.
+            field_type: The type of the field (float, int, bool, str, Color, Vector3, 
+                       GameObject, Component subclass, list, or InspectorFieldType enum value).
             default: Default value for the field (if None, a sensible default is used)
             min_value: Minimum value for numeric types
             max_value: Maximum value for numeric types
@@ -101,8 +126,10 @@ class InspectorField:
             enum_options: List of (value, label) tuples for enum types
             tooltip: Tooltip text for the inspector
             list_item_type: The type of items in a list (for list fields)
-            component_type: The component class type (for component reference fields)
         """
+        # Store the original field type for component references
+        self._original_field_type = None
+        
         # Convert Python type to InspectorFieldType
         if isinstance(field_type, InspectorFieldType):
             self.field_type = field_type
@@ -114,22 +141,28 @@ class InspectorField:
             self.field_type = InspectorFieldType.BOOL
         elif field_type == str:
             self.field_type = InspectorFieldType.STRING
-        elif isinstance(field_type, _ColorType):
-            self.field_type = InspectorFieldType.COLOR
-        elif isinstance(field_type, _Vector3Type):
-            self.field_type = InspectorFieldType.VECTOR3
         elif field_type == list:
             self.field_type = InspectorFieldType.LIST
-        elif isinstance(field_type, type) and issubclass(field_type, Enum):
-            self.field_type = InspectorFieldType.ENUM
-            # Auto-generate enum options if not provided
-            if enum_options is None:
-                enum_options = [(e.value, e.name) for e in field_type]
-        elif isinstance(field_type, type) and issubclass(field_type, Component):
-            self.field_type = InspectorFieldType.COMPONENT_REF
-            # Auto-set component_type if not provided
-            if component_type is None:
-                component_type = field_type
+        elif field_type is ColorType:
+            self.field_type = InspectorFieldType.COLOR
+        elif field_type is Vector3:
+            self.field_type = InspectorFieldType.VECTOR3
+        elif isinstance(field_type, type):
+            # Check for GameObject first (before Component, since we need to import it)
+            # Use string comparison to avoid circular import
+            if field_type.__name__ == 'GameObject' and field_type.__module__ == 'src.engine3d.gameobject':
+                self.field_type = InspectorFieldType.GAMEOBJECT_REF
+            elif issubclass(field_type, Enum):
+                self.field_type = InspectorFieldType.ENUM
+                # Auto-generate enum options if not provided
+                if enum_options is None:
+                    enum_options = [(e.value, e.name) for e in field_type]
+            elif issubclass(field_type, Component):
+                self.field_type = InspectorFieldType.COMPONENT_REF
+                # Store the original component type for reference
+                self._original_field_type = field_type
+            else:
+                raise ValueError(f"Unsupported field type: {field_type}")
         else:
             raise ValueError(f"Unsupported field type: {field_type}")
         
@@ -145,7 +178,6 @@ class InspectorField:
         self.enum_options = enum_options
         self.tooltip = tooltip
         self.list_item_type = list_item_type
-        self.component_type = component_type
         
         # Will be set by __set_name__
         self.name: Optional[str] = None
@@ -174,6 +206,8 @@ class InspectorField:
             return []  # Empty list by default
         elif self.field_type == InspectorFieldType.COMPONENT_REF:
             return None  # No component reference by default
+        elif self.field_type == InspectorFieldType.GAMEOBJECT_REF:
+            return None  # No GameObject reference by default
         return None
     
     def __set_name__(self, owner: type, name: str):
@@ -181,7 +215,13 @@ class InspectorField:
         self.name = name
         self.private_name = f"_inspector_{name}"
     
-    def __get__(self, obj: Any, objtype: Optional[type] = None) -> Any:
+    @overload
+    def __get__(self, obj: None, objtype: Optional[type] = None) -> "InspectorField[_T]": ...
+
+    @overload
+    def __get__(self, obj: Any, objtype: Optional[type] = None) -> _T: ...
+
+    def __get__(self, obj: Any, objtype: Optional[type] = None) -> Union[_T, "InspectorField[_T]"]:
         """Get the field value, returning the default if not set."""
         if obj is None:
             return self
@@ -191,7 +231,7 @@ class InspectorField:
             return self.default_value
         return value
     
-    def __set__(self, obj: Any, value: Any):
+    def __set__(self, obj: Any, value: _T):
         """Set the field value."""
         setattr(obj, self.private_name, value)
     
@@ -208,22 +248,12 @@ class InspectorField:
             enum_options=self.enum_options,
             tooltip=self.tooltip,
             list_item_type=self.list_item_type,
-            component_type=self.component_type,
         )
-
-
-# Type markers for inspector fields (use these as field_type in InspectorField)
-class _ColorType:
-    """Marker type for color fields (RGB/RGBA tuple in 0-1 range)."""
-    pass
-
-class _Vector3Type:
-    """Marker type for vector3 fields (3D position/direction tuple)."""
-    pass
-
-# Export these as singletons for use in InspectorField
-color = _ColorType()
-vector3 = _Vector3Type()
+    
+    @property
+    def component_type(self) -> Optional[type]:
+        """Get the component type for COMPONENT_REF fields."""
+        return self._original_field_type
 
 
 def inspector_field(
@@ -237,7 +267,6 @@ def inspector_field(
     enum_options: Optional[List[Tuple[Any, str]]] = None,
     tooltip: Optional[str] = None,
     list_item_type: Optional[Union[type, InspectorFieldType]] = None,
-    component_type: Optional[type] = None,
 ) -> InspectorField:
     """
     Convenience function to create an InspectorField.
@@ -255,7 +284,6 @@ def inspector_field(
         enum_options=enum_options,
         tooltip=tooltip,
         list_item_type=list_item_type,
-        component_type=component_type,
     )
 
 

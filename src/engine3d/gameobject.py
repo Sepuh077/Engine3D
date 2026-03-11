@@ -7,6 +7,7 @@ import numpy as np
 
 from .component import Component, Script, WaitForSeconds, WaitEndOfFrame, WaitForFrames, Time
 from .transform import Transform
+from src.types import Vector3
 
 T = TypeVar('T', bound=Component)
 
@@ -326,6 +327,14 @@ class GameObject:
 
     @staticmethod
     def _serialize_value(value: Any, source_go_id: str = None, source_comp_idx: int = 0) -> Any:
+        # Handle GameObject references
+        if isinstance(value, GameObject):
+            return {
+                "__type__": "gameobject_ref",
+                "game_object_id": value._id,
+                "game_object_name": value.name,
+            }
+        
         # Handle component references
         if isinstance(value, Component):
             if value.game_object:
@@ -349,6 +358,11 @@ class GameObject:
                 "__type__": "ndarray",
                 "dtype": str(value.dtype),
                 "value": value.tolist(),
+            }
+        if isinstance(value, Vector3):
+            return {
+                "__type__": "Vector3",
+                "value": value.to_list(),
             }
         if isinstance(value, (np.float32, np.float64, np.int32, np.int64)):
             return value.item()
@@ -407,6 +421,13 @@ class GameObject:
     @staticmethod
     def _deserialize_value(value: Any, go_registry: Dict[str, 'GameObject'] = None) -> Any:
         if isinstance(value, dict):
+            # Handle GameObject references
+            if value.get("__type__") == "gameobject_ref":
+                if go_registry is None:
+                    return None  # Can't resolve without registry
+                go_id = value.get("game_object_id")
+                return go_registry.get(go_id)
+            
             # Handle component references
             if value.get("__type__") == "component_ref":
                 if go_registry is None:
@@ -420,6 +441,8 @@ class GameObject:
             
             if value.get("__type__") == "ndarray":
                 return np.array(value.get("value", []), dtype=value.get("dtype", None))
+            if value.get("__type__") == "Vector3":
+                return Vector3(value.get("value", [0, 0, 0]))
             if value.get("__type__") == "tuple":
                 return tuple(GameObject._deserialize_value(val, go_registry) for val in value.get("value", []))
             if value.get("__type__") == "set":

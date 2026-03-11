@@ -9,8 +9,7 @@ import random
 
 import numpy as np
 
-from src.physics import BoxCollider, SphereCollider, CollisionMode, Collider
-from .graphics.color import ColorType
+from src.types import ColorType, Vector3
 from .gameobject import GameObject
 from .object3d import create_cube, Object3D
 from .component import Component, Time
@@ -19,7 +18,7 @@ from .component import Component, Time
 ParticleObject = Union[str, GameObject, Callable[[], GameObject]]
 LifetimeFloat = Callable[[float], float]
 LifetimeColor = Callable[[float], ColorType]
-LifetimeVelocity = Callable[[float], Union[float, np.ndarray, tuple, list]]
+LifetimeVelocity = Callable[[float], Union[float, np.ndarray, tuple, list, Vector3]]
 
 
 @dataclass
@@ -36,8 +35,8 @@ class Particle:
 
     def __init__(self, obj: GameObject):
         self.obj = obj
-        self.velocity = np.zeros(3, dtype=np.float32)
-        self.local_position = np.zeros(3, dtype=np.float32)
+        self.velocity = Vector3.zero()
+        self.local_position = Vector3.zero()
         self.life = 1.0
         self.age = 0.0
         self.active = False
@@ -47,8 +46,8 @@ class ParticleShape:
     """Base class for emission shapes."""
 
     def get_spawn_pos_and_dir(
-        self, system_pos: np.ndarray, rng: random.Random
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        self, system_pos: Vector3, rng: random.Random
+    ) -> Tuple[Vector3, Vector3]:
         raise NotImplementedError
 
 
@@ -56,16 +55,16 @@ class SphereShape(ParticleShape):
     """Spawns at center, moves in any direction."""
 
     def get_spawn_pos_and_dir(
-        self, system_pos: np.ndarray, rng: random.Random
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        self, system_pos: Vector3, rng: random.Random
+    ) -> Tuple[Vector3, Vector3]:
         phi = rng.uniform(0, 2 * np.pi)
         costheta = rng.uniform(-1, 1)
         theta = np.arccos(costheta)
         x = np.sin(theta) * np.cos(phi)
         y = np.sin(theta) * np.sin(phi)
         z = np.cos(theta)
-        direction = np.array([x, y, z], dtype=np.float32)
-        return system_pos.copy(), direction
+        direction = Vector3(x, y, z)
+        return Vector3(system_pos), direction
 
 
 class ConeShape(ParticleShape):
@@ -73,13 +72,12 @@ class ConeShape(ParticleShape):
 
     def __init__(self, angle_degrees: float = 25.0, direction=(0.0, 1.0, 0.0)):
         self.angle_rad = np.radians(angle_degrees)
-        dir_arr = np.array(direction, dtype=np.float32)
-        norm = np.linalg.norm(dir_arr)
-        self.direction = dir_arr / norm if norm > 1e-6 else np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        dir_vec = Vector3(direction)
+        self.direction = dir_vec.normalized
 
     def get_spawn_pos_and_dir(
-        self, system_pos: np.ndarray, rng: random.Random
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        self, system_pos: Vector3, rng: random.Random
+    ) -> Tuple[Vector3, Vector3]:
         # Sample direction in a cone around +Y axis
         phi = rng.uniform(0, 2 * np.pi)
         z_cone = rng.uniform(np.cos(self.angle_rad), 1.0)
@@ -88,64 +86,88 @@ class ConeShape(ParticleShape):
         z = sin_theta * np.sin(phi)
         y = z_cone
         
-        local_dir = np.array([x, y, z], dtype=np.float32)
+        local_dir = Vector3(x, y, z)
         
         # Rotate local_dir to align with self.direction
         # If direction is +Y, no rotation needed
-        if np.allclose(self.direction, [0, 1, 0]):
-            return system_pos.copy(), local_dir
+        if self.direction == Vector3.up():
+            return Vector3(system_pos), local_dir
         
         # If direction is -Y, flip it
-        if np.allclose(self.direction, [0, -1, 0]):
-            return system_pos.copy(), np.array([x, -y, z], dtype=np.float32)
+        if self.direction == Vector3.down():
+            return Vector3(system_pos), Vector3(x, -y, z)
 
         # Standard rotation to align [0, 1, 0] with self.direction
         # Using Rodrigues' rotation formula or similar
-        up = np.array([0, 1, 0], dtype=np.float32)
-        v = np.cross(up, self.direction)
-        c = np.dot(up, self.direction)
-        s = np.linalg.norm(v)
+        up = Vector3.up()
+        v = Vector3.cross(up, self.direction)
+        c = Vector3.dot(up, self.direction)
+        s = v.magnitude
         
         if s < 1e-6: # Should be handled by cases above
-            return system_pos.copy(), local_dir
+            return Vector3(system_pos), local_dir
             
-        kmat = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]], dtype=np.float32)
+        # Build rotation matrix using Rodrigues formula
+        v_np = v.to_numpy()
+        kmat = np.array([[0, -v_np[2], v_np[1]], [v_np[2], 0, -v_np[0]], [-v_np[1], v_np[0], 0]], dtype=np.float32)
         rotation_matrix = np.eye(3, dtype=np.float32) + kmat + kmat @ kmat * ((1 - c) / (s**2))
         
-        final_dir = rotation_matrix @ local_dir
-        return system_pos.copy(), final_dir
+        final_dir = Vector3(rotation_matrix @ local_dir.to_numpy())
+        return Vector3(system_pos), final_dir
 
 
 class BoxShape(ParticleShape):
     """Spawns on one side randomly, moves to the other side."""
 
     def __init__(self, size=(1.0, 1.0, 1.0), direction=(0.0, 1.0, 0.0)):
-        self.size = np.array(size, dtype=np.float32)
-        dir_arr = np.array(direction, dtype=np.float32)
-        norm = np.linalg.norm(dir_arr)
-        self.direction = dir_arr / norm if norm > 1e-6 else np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        self.size = Vector3(size)
+        dir_vec = Vector3(direction)
+        self.direction = dir_vec.normalized
 
     def get_spawn_pos_and_dir(
-        self, system_pos: np.ndarray, rng: random.Random
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        self, system_pos: Vector3, rng: random.Random
+    ) -> Tuple[Vector3, Vector3]:
         half = self.size * 0.5
         
         # Determine dominant axis of direction to decide spawn side
-        abs_dir = np.abs(self.direction)
-        axis = np.argmax(abs_dir)
-        sign = np.sign(self.direction[axis])
-        if sign == 0: sign = 1.0
+        abs_dir = Vector3(abs(self.direction.x), abs(self.direction.y), abs(self.direction.z))
+        axis = 0
+        max_val = abs_dir.x
+        if abs_dir.y > max_val:
+            axis = 1
+            max_val = abs_dir.y
+        if abs_dir.z > max_val:
+            axis = 2
+        
+        sign = 1.0
+        if axis == 0:
+            sign = np.sign(self.direction.x)
+        elif axis == 1:
+            sign = np.sign(self.direction.y)
+        else:
+            sign = np.sign(self.direction.z)
+        if sign == 0:
+            sign = 1.0
         
         # Spawn on the side opposite to the direction sign
         # e.g. if direction is +Y, spawn on -Y side
-        pos = np.zeros(3, dtype=np.float32)
+        pos = Vector3.zero()
         for i in range(3):
             if i == axis:
-                pos[i] = -sign * half[i]
+                pos = pos.set(
+                    pos.x if i != 0 else -sign * half.x,
+                    pos.y if i != 1 else -sign * half.y,
+                    pos.z if i != 2 else -sign * half.z
+                )
             else:
-                pos[i] = rng.uniform(-half[i], half[i])
+                if i == 0:
+                    pos = Vector3(rng.uniform(-half.x, half.x), pos.y, pos.z)
+                elif i == 1:
+                    pos = Vector3(pos.x, rng.uniform(-half.y, half.y), pos.z)
+                else:
+                    pos = Vector3(pos.x, pos.y, rng.uniform(-half.z, half.z))
         
-        return system_pos + pos, self.direction.copy()
+        return system_pos + pos, Vector3(self.direction)
 
 
 def lerp(a: float, b: float, t: float) -> float:
@@ -204,12 +226,12 @@ class ParticleSystem(Component):
         max_particles: int = 100,
         burst: Optional[ParticleBurst] = None,
         gravity_scale: float = 1.0,
-        collider: Optional[Collider] = None,
+        collider=None,  # Collider type - use lazy import to avoid circular dependency
         shape: Optional[ParticleShape] = None,
         is_local: bool = True,
     ):
         super().__init__()
-        self._position = np.array(position, dtype=np.float32)
+        self._position = Vector3(position)
         self.play_on_awake = play_on_awake
         self.is_local = bool(is_local)
         self.play_duration = float(play_duration)
@@ -236,12 +258,12 @@ class ParticleSystem(Component):
         self._rng = random.Random()
 
     @property
-    def position(self) -> np.ndarray:
-        return self._position.copy()
+    def position(self) -> Vector3:
+        return Vector3(self._position)
 
     @position.setter
     def position(self, value):
-        self._position = np.array(value, dtype=np.float32)
+        self._position = Vector3(value)
 
     @property
     def is_playing(self) -> bool:
@@ -307,15 +329,16 @@ class ParticleSystem(Component):
         
         return obj
 
-    def _attach_collider(self, obj: GameObject) -> Collider:
+    def _attach_collider(self, obj: GameObject):
+        from src.physics import BoxCollider, SphereCollider, Collider
         template = self.collider
         if template is None:
             raise RuntimeError("ParticleSystem collider template is missing.")
 
         if isinstance(template, SphereCollider):
-            collider = SphereCollider(center=list(template.center), radius=template.radius)
+            collider = SphereCollider(center=Vector3(template.center), radius=template.radius)
         elif isinstance(template, BoxCollider):
-            collider = BoxCollider(center=list(template.center), size=list(template.size))
+            collider = BoxCollider(center=Vector3(template.center), size=Vector3(template.size))
         else:
             collider = SphereCollider()
 
@@ -374,7 +397,7 @@ class ParticleSystem(Component):
                         count = self._rng.randint(0, max(self.burst.count, 0))
                     self.emit(count)
 
-        gravity = np.array([0.0, -9.81, 0.0], dtype=np.float32) * self.gravity_scale
+        gravity = Vector3(0.0, -9.81, 0.0) * self.gravity_scale
         for particle in self._particles:
             if not particle.active:
                 continue
@@ -384,7 +407,7 @@ class ParticleSystem(Component):
                 self._deactivate(particle)
                 continue
 
-            particle.velocity += gravity * delta_time
+            particle.velocity = particle.velocity + gravity * delta_time
 
             life_ratio = particle.age / max(particle.life, 1e-6)
             if self.velocity_over_lifetime is not None:
@@ -393,10 +416,10 @@ class ParticleSystem(Component):
                     base = self._normalize_velocity(particle.velocity)
                     particle.velocity = base * float(vel_value)
                 else:
-                    particle.velocity = np.array(vel_value, dtype=np.float32)
+                    particle.velocity = Vector3(vel_value)
 
             if self.is_local and self.game_object:
-                particle.local_position += particle.velocity * delta_time
+                particle.local_position = particle.local_position + particle.velocity * delta_time
                 new_world_pos = self.game_object.transform.world_position + particle.local_position
                 if self.collider is not None:
                     self._move_with_collisions(particle, new_world_pos)
@@ -451,19 +474,20 @@ class ParticleSystem(Component):
             if isinstance(vel_value, (float, int, np.floating, np.integer)):
                 particle.velocity = self._normalize_velocity(particle.velocity) * float(vel_value)
             else:
-                particle.velocity = np.array(vel_value, dtype=np.float32)
+                particle.velocity = Vector3(vel_value)
 
     def _deactivate(self, particle: Particle) -> None:
         particle.active = False
         particle.obj.get_component(Object3D).visible = False
 
-    def _normalize_velocity(self, velocity: np.ndarray) -> np.ndarray:
-        norm = np.linalg.norm(velocity)
+    def _normalize_velocity(self, velocity: Vector3) -> Vector3:
+        norm = velocity.magnitude
         if norm < 1e-6:
-            return np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            return Vector3.up()
         return velocity / norm
 
-    def _move_with_collisions(self, particle: Particle, target_pos: np.ndarray) -> None:
+    def _move_with_collisions(self, particle: Particle, target_pos: Vector3) -> None:
+        from src.physics import Collider, CollisionMode
         obj = particle.obj
         colliders = obj.get_components(Collider)
         if not colliders:
@@ -477,4 +501,4 @@ class ParticleSystem(Component):
             return
 
         if collider._current_collisions:
-            particle.velocity = np.zeros(3, dtype=np.float32)
+            particle.velocity = Vector3.zero()

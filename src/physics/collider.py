@@ -1,7 +1,8 @@
 import numpy as np
 from typing import TYPE_CHECKING
 from .types import CollisionMode, CollisionRelation
-from src.engine3d.component import Component, InspectorField, vector3
+from src.engine3d.component import Component, InspectorField
+from src.types import Vector3
 from .group import ColliderGroup
 
 if TYPE_CHECKING:
@@ -12,11 +13,11 @@ class Collider(Component):
     """Base collider. Subclasses for types (Box, Sphere, Capsule). Contains Object3D ref."""
     
     # Inspector fields
-    center = InspectorField(vector3, default=(0.0, 0.0, 0.0), tooltip="Center offset of the collider")
+    center = InspectorField(Vector3, default=(0.0, 0.0, 0.0), tooltip="Center offset of the collider")
 
     def __init__(self):
         super().__init__()
-        self.center = [0.0, 0.0, 0.0]
+        self.center = Vector3.zero()
         self.sphere = None
         self.obb = None
         self.aabb = None
@@ -53,8 +54,8 @@ class Collider(Component):
 
         # Shared rotation/extents/center
         rotation = obj.transform._world_rotation
-        scale = obj.transform._world_scale
-        position = obj.transform._world_position
+        scale = obj.transform._world_scale.to_numpy()
+        position = obj.transform._world_position.to_numpy()
 
         cx, cy, cz = np.cos(rotation)
         sx, sy, sz = np.sin(rotation)
@@ -73,7 +74,8 @@ class Collider(Component):
         aabb_dims = half_extents * 2
 
         # Collider-specific center offset (local offset scaled/rotated)
-        local_offset = local_extents * np.array(self.center, dtype=np.float32)
+        center_vec = self.center if isinstance(self.center, Vector3) else Vector3(self.center)
+        local_offset = local_extents * center_vec.to_numpy()
         c_offset = (local_offset * scale) @ R
         collider_center = base_center + c_offset
 
@@ -151,13 +153,13 @@ class BoxCollider(Collider):
     """Box/OBB collider (replaces old CUBE). Only size/center."""
     
     # Inspector fields
-    size = InspectorField(vector3, default=(1.0, 1.0, 1.0), tooltip="Size of the box collider")
+    size = InspectorField(Vector3, default=(1.0, 1.0, 1.0), tooltip="Size of the box collider")
 
     def __init__(self, center=None, size=None):
         super().__init__()
         if center:
-            self.center = center
-        self.size = size or [1.0, 1.0, 1.0]
+            self.center = Vector3(center) if not isinstance(center, Vector3) else center
+        self.size = Vector3(size) if size else Vector3.one()
         self.type = 2  # legacy for compat in collision funcs
 
     # Override: only Box/OBB (no radius/cylinder)
@@ -167,7 +169,8 @@ class BoxCollider(Collider):
             return
         R, absR, extents, aabb_dims, collider_center = shared
         # Box-specific
-        obb_extents = extents * np.array(self.size, dtype=np.float32)
+        size_vec = self.size if isinstance(self.size, Vector3) else Vector3(self.size)
+        obb_extents = extents * size_vec.to_numpy()
         obb = (collider_center, R, obb_extents)
         half = absR @ obb_extents
         aabb = (collider_center - half, collider_center + half)
@@ -185,7 +188,7 @@ class SphereCollider(Collider):
     def __init__(self, center=None, radius=1.0):
         super().__init__()
         if center:
-            self.center = center
+            self.center = Vector3(center) if not isinstance(center, Vector3) else center
         self.radius = radius
         self.type = 0  # legacy
 
@@ -199,7 +202,7 @@ class SphereCollider(Collider):
         obj = self.game_object
         from src.engine3d.object3d import Object3D
         obj3d = obj.get_component(Object3D)
-        radius = obj3d._local_radius * np.max(np.abs(obj.transform._world_scale)) * self.radius
+        radius = obj3d._local_radius * np.max(np.abs(obj.transform._world_scale.to_numpy())) * self.radius
         sphere = (collider_center, float(radius))
         # AABB from sphere approx
         aabb = (collider_center - radius, collider_center + radius)
@@ -218,7 +221,7 @@ class CapsuleCollider(Collider):
     def __init__(self, center=None, radius=1.0, height=1.0):
         super().__init__()
         if center:
-            self.center = center
+            self.center = Vector3(center) if not isinstance(center, Vector3) else center
         self.radius = radius
         self.height = height
         self.type = 1  # legacy
@@ -233,7 +236,7 @@ class CapsuleCollider(Collider):
         obj = self.game_object
         from src.engine3d.object3d import Object3D
         obj3d = obj.get_component(Object3D)
-        half_ext = (obj3d._local_max - obj3d._local_min) * 0.5 * np.abs(obj.transform._world_scale)
+        half_ext = (obj3d._local_max - obj3d._local_min) * 0.5 * np.abs(obj.transform._world_scale.to_numpy())
         cyl_radius = float(np.maximum(half_ext[0], half_ext[2])) * self.radius
         half_height = float(half_ext[1]) * self.height
         cylinder = (collider_center, cyl_radius, half_height)

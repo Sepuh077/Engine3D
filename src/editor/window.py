@@ -18,6 +18,30 @@ from .viewport import ViewportWidget
 from .scene import EditorScene
 
 
+class NoWheelSpinBox(QtWidgets.QDoubleSpinBox):
+    """A spinbox that ignores mouse wheel events to prevent accidental value changes."""
+    
+    def wheelEvent(self, event):
+        # Ignore wheel events - don't change value on scroll
+        event.ignore()
+
+
+class NoWheelIntSpinBox(QtWidgets.QSpinBox):
+    """A spinbox that ignores mouse wheel events to prevent accidental value changes."""
+    
+    def wheelEvent(self, event):
+        # Ignore wheel events - don't change value on scroll
+        event.ignore()
+
+
+class NoWheelSlider(QtWidgets.QSlider):
+    """A slider that ignores mouse wheel events to prevent accidental value changes."""
+    
+    def wheelEvent(self, event):
+        # Ignore wheel events - don't change value on scroll
+        event.ignore()
+
+
 class HierarchyTreeWidget(QtWidgets.QTreeWidget):
     """Custom tree widget that supports drag-drop parenting of GameObjects."""
     object_parented = QtCore.Signal(object, object)  # (child_obj, parent_obj or None)
@@ -332,9 +356,9 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._transform_group = QtWidgets.QGroupBox("Transform", content)
         form = QtWidgets.QFormLayout(self._transform_group)
 
-        self._pos_fields = [QtWidgets.QDoubleSpinBox() for _ in range(3)]
-        self._rot_fields = [QtWidgets.QDoubleSpinBox() for _ in range(3)]
-        self._scale_fields = [QtWidgets.QDoubleSpinBox() for _ in range(3)]
+        self._pos_fields = [NoWheelSpinBox() for _ in range(3)]
+        self._rot_fields = [NoWheelSpinBox() for _ in range(3)]
+        self._scale_fields = [NoWheelSpinBox() for _ in range(3)]
 
         for fields in [self._pos_fields, self._rot_fields, self._scale_fields]:
             for f in fields:
@@ -507,8 +531,7 @@ class EditorWindow(QtWidgets.QMainWindow):
 
     def _create_script_file(self, file_path: Path, class_name: str) -> None:
         """Create a new script file with the template."""
-        script_template = f'''from src.engine3d import Script, Time, InspectorField, color, vector3
-from src.engine3d.transform import Transform
+        script_template = f'''from src.engine3d import Script, Time, InspectorField, Color, Vector3, GameObject, Transform
 
 
 class {class_name}(Script):
@@ -518,24 +541,27 @@ class {class_name}(Script):
     Add InspectorField attributes to show them in the editor inspector.
     Example:
         speed = InspectorField(float, default=5.0, min_value=0.0, max_value=100.0)
-        health = InspectorField(float, default=100.0, min_value=0.0, max_value=100.0)
+        health = InspectorField(int, default=100, min_value=0, max_value=100)
         is_active = InspectorField(bool, default=True)
-        player_color = InspectorField(color, default=(1.0, 0.0, 0.0))
-        spawn_pos = InspectorField(vector3, default=(0.0, 0.0, 0.0))
+        player_color = InspectorField(Color, default=(1.0, 0.0, 0.0))
+        spawn_pos = InspectorField(Vector3, default=(0.0, 0.0, 0.0))
         
     List fields - allows adding multiple values:
         scores = InspectorField(list, default=[], list_item_type=int)
         waypoints = InspectorField(list, default=[], list_item_type=float)
         
     Component reference fields - reference other components:
-        player_transform = InspectorField(Transform, default=None, component_type=Transform)
-        target_camera = InspectorField(Camera3D, default=None, component_type=Camera3D)
+        player_transform = InspectorField(Transform, default=None)
+        target_camera = InspectorField(Camera3D, default=None)
+        
+    GameObject reference fields - reference other game objects:
+        target_object = InspectorField(GameObject, default=None)
     """
     
     # Example inspector fields (uncomment to use):
     # speed = InspectorField(float, default=5.0, min_value=0.0, max_value=100.0, tooltip="Movement speed")
     # scores = InspectorField(list, default=[], list_item_type=int)
-    # player_transform = InspectorField(Transform, default=None, component_type=Transform)
+    # player_transform = InspectorField(Transform, default=None)
     
     def start(self):
         """
@@ -990,8 +1016,8 @@ class {class_name}(Script):
         if not slider.hasFocus():
             slider.setValue(value)
 
-    def _make_spinbox(self, minimum: float, maximum: float, step: float = 0.1, decimals: int = 2) -> QtWidgets.QDoubleSpinBox:
-        spinbox = QtWidgets.QDoubleSpinBox()
+    def _make_spinbox(self, minimum: float, maximum: float, step: float = 0.1, decimals: int = 2) -> NoWheelSpinBox:
+        spinbox = NoWheelSpinBox()
         spinbox.setRange(minimum, maximum)
         spinbox.setSingleStep(step)
         spinbox.setDecimals(decimals)
@@ -1019,7 +1045,7 @@ class {class_name}(Script):
         layout.setContentsMargins(0, 0, 0, 0)
         label = QtWidgets.QLabel(channel_name)
         label.setFixedWidth(12)
-        slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        slider = NoWheelSlider(QtCore.Qt.Orientation.Horizontal)
         slider.setRange(0, 255)
         slider.setValue(initial)
         slider.valueChanged.connect(on_changed)
@@ -1881,14 +1907,16 @@ class {class_name}(Script):
             return self._create_list_field(comp, field_name, field_info, current_value)
         elif field_info.field_type == InspectorFieldType.COMPONENT_REF:
             return self._create_component_ref_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.GAMEOBJECT_REF:
+            return self._create_gameobject_ref_field(comp, field_name, field_info, current_value)
         else:
             # Fallback: just show a label
             label = QtWidgets.QLabel(str(current_value))
             return label
 
-    def _create_float_field(self, comp, field_name: str, field_info, current_value: float) -> QtWidgets.QDoubleSpinBox:
+    def _create_float_field(self, comp, field_name: str, field_info, current_value: float) -> NoWheelSpinBox:
         """Create a spinbox for a float field."""
-        spinbox = QtWidgets.QDoubleSpinBox()
+        spinbox = NoWheelSpinBox()
         min_val = field_info.min_value if field_info.min_value is not None else -10000.0
         max_val = field_info.max_value if field_info.max_value is not None else 10000.0
         step = field_info.step if field_info.step is not None else 0.1
@@ -1906,9 +1934,9 @@ class {class_name}(Script):
         spinbox.valueChanged.connect(lambda val, c=comp, fn=field_name: self._on_inspector_field_changed(c, fn, val))
         return spinbox
 
-    def _create_int_field(self, comp, field_name: str, field_info, current_value: int) -> QtWidgets.QSpinBox:
+    def _create_int_field(self, comp, field_name: str, field_info, current_value: int) -> NoWheelIntSpinBox:
         """Create a spinbox for an int field."""
-        spinbox = QtWidgets.QSpinBox()
+        spinbox = NoWheelIntSpinBox()
         min_val = int(field_info.min_value) if field_info.min_value is not None else -10000
         max_val = int(field_info.max_value) if field_info.max_value is not None else 10000
         step = int(field_info.step) if field_info.step is not None else 1
@@ -2173,8 +2201,9 @@ class {class_name}(Script):
         # Add "None" option
         combo.addItem("(None)", None)
         
-        # Get the component type filter
-        component_type = field_info.component_type
+        # Get the component type filter from the InspectorField descriptor
+        descriptor = getattr(type(comp), field_name, None)
+        component_type = descriptor.component_type if descriptor else None
         
         # Collect all components of the specified type from all game objects
         component_entries = []  # (display_name, component_instance)
@@ -2222,6 +2251,55 @@ class {class_name}(Script):
                 for display_name, component in component_entries:
                     if id(component) == data:
                         comp.set_inspector_field_value(field_name, component)
+                        break
+            self._viewport.update()
+            self._mark_scene_dirty()
+        
+        combo.currentIndexChanged.connect(on_selection_changed)
+        return combo
+
+    def _create_gameobject_ref_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QComboBox:
+        """Create a combo box for selecting a GameObject reference."""
+        combo = QtWidgets.QComboBox()
+        
+        # Add "None" option
+        combo.addItem("(None)", None)
+        
+        # Collect all game objects in the scene
+        game_object_entries = []  # (display_name, game_object_instance)
+        
+        if self._scene:
+            for obj in self._scene.objects:
+                game_object_entries.append((obj.name, obj))
+        
+        # Sort entries by name
+        game_object_entries.sort(key=lambda x: x[0])
+        
+        # Add to combo box
+        for display_name, game_obj in game_object_entries:
+            combo.addItem(display_name, id(game_obj))  # Use id() as data
+        
+        # Set current value if there is one
+        if current_value is not None:
+            target_id = id(current_value)
+            for i in range(combo.count()):
+                if combo.itemData(i) == target_id:
+                    combo.setCurrentIndex(i)
+                    break
+        
+        if field_info.tooltip:
+            combo.setToolTip(field_info.tooltip)
+        
+        # Handle selection change
+        def on_selection_changed(idx):
+            data = combo.itemData(idx)
+            if data is None:
+                comp.set_inspector_field_value(field_name, None)
+            else:
+                # Find the game object by id
+                for display_name, game_obj in game_object_entries:
+                    if id(game_obj) == data:
+                        comp.set_inspector_field_value(field_name, game_obj)
                         break
             self._viewport.update()
             self._mark_scene_dirty()

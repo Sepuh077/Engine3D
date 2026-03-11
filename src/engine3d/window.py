@@ -22,9 +22,10 @@ from .camera import Camera3D
 from .light import Light3D, DirectionalLight3D
 from .graphics.color import Color, ColorType
 from .input.keys import Keys
-from src.physics import ColliderType, CollisionMode, CollisionRelation, Collider
-from src.physics.rigidbody import Rigidbody
 from .component import Script, Time
+
+# Import physics types with TYPE_CHECKING to avoid circular imports at module level
+# These are imported locally in methods that need them
 
 try:
     import moderngl
@@ -487,8 +488,8 @@ class Window3D:
             self._ensure_mesh(obj3d_comp)
         self.objects.append(go)
         
-        # Start scripts on the new object
-        go.start_scripts()
+        # Note: Scripts should NOT be started here - they should only be started
+        # when play mode begins (via start() or manually by the editor)
         
         return go
 
@@ -523,6 +524,7 @@ class Window3D:
         """
         Move an object by delta.
         """
+        from src.physics import Collider, CollisionMode
         # Check first collider's mode (IGNORE skips collision)
         coll = obj.get_component(Collider)
         if coll and coll.collision_mode == CollisionMode.IGNORE:
@@ -530,6 +532,8 @@ class Window3D:
         return obj.transform.move(*delta)
 
     def _resolve_collision(self, a: GameObject, b: GameObject, manifold):
+        from src.physics import Collider
+        from src.physics.rigidbody import Rigidbody
         # Minimal depen + velocity project (slide, no jitter/vibrate on wall)
         depth = getattr(manifold, 'depth', 0.0)
         if depth <= 0:
@@ -580,6 +584,8 @@ class Window3D:
                 c.update_bounds()
 
     def _process_collisions(self):
+        from src.physics import Collider, CollisionMode, CollisionRelation
+        from src.physics.rigidbody import Rigidbody
         # Loop over *all colliders* (multi-collider support; no obj level)
         all_cols = []
         for o in self._active_objects():
@@ -796,6 +802,7 @@ class Window3D:
         Build GPU batches for static objects in the active scene.
         Call this after creating/moving static objects.
         """
+        from src.physics.rigidbody import Rigidbody
         self.clear_static_batches()
 
         groups = defaultdict(list)
@@ -1309,6 +1316,7 @@ class Window3D:
         )
 
     def draw_collider(self, obj: GameObject, color=(0, 1, 0), line_width=1.0):
+        from src.physics import Collider, ColliderType
         camera = self.active_camera_override or (self._current_scene.camera if self._current_scene else self.camera)
         if not camera:
             return
@@ -1728,6 +1736,7 @@ class Window3D:
         return
 
     def _draw_editor_colliders(self):
+        from src.physics import Collider
         for obj in self._active_objects():
             if obj.get_components(Collider):
                 self.draw_collider(obj, color=(1.0, 0.0, 0.0), line_width=1.5)
@@ -1859,24 +1868,42 @@ class Window3D:
     # Main loop
     # =========================================================================
 
-    def start(self, fps: int = 60):
-        """Initialize the window for manual ticking or run()."""
+    def start(self, fps: int = 60, start_scripts: bool = True):
+        """
+        Initialize the window for manual ticking or run().
+        
+        Args:
+            fps: Target frames per second
+            start_scripts: If True, call start_scripts() on all objects.
+                          Set to False when the editor wants to control script lifecycle.
+        """
         self._fps = fps
         if not self._setup_done:
             self.setup()
             self._setup_done = True
 
-        for obj in self._active_objects():
-            obj.start_scripts()
+        if start_scripts:
+            for obj in self._active_objects():
+                obj.start_scripts()
 
         self._running = True
 
     def tick(self, fps: Optional[int] = None, simulate: bool = True) -> bool:
-        """Advance one frame. Returns False when closed."""
+        """Advance one frame. Returns False when closed.
+        
+        Args:
+            fps: Target frames per second
+            simulate: If True, run physics and update logic
+            
+        Note:
+            When tick() is called before start(), it will call start() automatically
+            but with start_scripts=False. This allows the editor to control when
+            scripts are started (only when Play is clicked).
+        """
         if fps is not None:
             self._fps = fps
         if not self._running:
-            self.start(self._fps)
+            self.start(self._fps, start_scripts=False)  # Don't start scripts on auto-start
 
         raw_dt = self._clock.tick(self._fps) / 1000.0
         self._delta_time = raw_dt

@@ -2,6 +2,7 @@ from typing import Optional, TYPE_CHECKING, List
 import numpy as np
 
 from .component import Component
+from src.types import Vector3
 
 if TYPE_CHECKING:
     from .gameobject import GameObject
@@ -17,19 +18,19 @@ class Transform(Component):
     def __init__(self):
         super().__init__()
         # Local transform values (relative to parent)
-        self._local_position = np.zeros(3, dtype=np.float32)
+        self._local_position = Vector3.zero()
         self._local_rotation = np.zeros(3, dtype=np.float32)
-        self._local_scale = np.ones(3, dtype=np.float32)
+        self._local_scale = Vector3.one()
         
         # Cached world transform values
-        self._world_position = np.zeros(3, dtype=np.float32)
+        self._world_position = Vector3.zero()
         self._world_rotation = np.zeros(3, dtype=np.float32)
-        self._world_scale = np.ones(3, dtype=np.float32)
+        self._world_scale = Vector3.one()
 
         self._transform_dirty = True
         self._cached_model = None
         self._cached_rotation = None
-        self._prev_position = np.copy(self._local_position)
+        self._prev_position = Vector3(self._local_position)
         
         # Parent-child relationships
         self._parent: Optional['Transform'] = None
@@ -46,7 +47,7 @@ class Transform(Component):
                 comp._transform_dirty = True
 
     def _update_prev_position(self):
-        self._prev_position = np.copy(self._local_position)
+        self._prev_position = Vector3(self._local_position)
     
     # =========================================================================
     # Parent-child relationship methods
@@ -98,14 +99,14 @@ class Transform(Component):
     # =========================================================================
     
     @property
-    def local_position(self) -> np.ndarray:
+    def local_position(self) -> Vector3:
         """Get local position (relative to parent)."""
-        return self._local_position.copy()
+        return Vector3(self._local_position)
     
     @local_position.setter
     def local_position(self, value):
         self._update_prev_position()
-        self._local_position = np.array(value, dtype=np.float32)
+        self._local_position = Vector3(value)
         self._mark_dirty()
     
     @property
@@ -119,13 +120,13 @@ class Transform(Component):
         self._mark_dirty()
     
     @property
-    def local_scale(self) -> tuple:
+    def local_scale(self) -> Vector3:
         """Get local scale (relative to parent)."""
-        return tuple(self._local_scale)
+        return Vector3(self._local_scale)
     
     @local_scale.setter
     def local_scale(self, value):
-        self._local_scale = np.array(value, dtype=np.float32)
+        self._local_scale = Vector3(value)
         self._mark_dirty()
     
     # =========================================================================
@@ -135,16 +136,16 @@ class Transform(Component):
     def _compute_world_transform(self):
         """Compute world position, rotation, and scale from parent."""
         if self._parent is None:
-            self._world_position = self._local_position.copy()
+            self._world_position = Vector3(self._local_position)
             self._world_rotation = self._local_rotation.copy()
-            self._world_scale = self._local_scale.copy()
+            self._world_scale = Vector3(self._local_scale)
         else:
             # Get parent's world transform
             parent = self._parent
             parent._compute_world_transform()
             
             # World scale = parent scale * local scale
-            self._world_scale = parent._world_scale * self._local_scale
+            self._world_scale = Vector3.scale(parent._world_scale, self._local_scale)
             
             # World rotation = parent rotation + local rotation
             self._world_rotation = parent._world_rotation + self._local_rotation
@@ -162,20 +163,20 @@ class Transform(Component):
             R = Rx @ Ry @ Rz  # XYZ intrinsic rotation order
             
             # Scale local position by parent scale, then rotate, then translate
-            scaled_local = self._local_position * parent._world_scale
+            scaled_local = self._local_position.to_numpy() * parent._world_scale.to_numpy()
             rotated_local = scaled_local @ R
             self._world_position = parent._world_position + rotated_local
     
     @property
-    def world_position(self) -> np.ndarray:
+    def world_position(self) -> Vector3:
         """Get world position (computed from parent + local)."""
         self._compute_world_transform()
-        return self._world_position.copy()
+        return Vector3(self._world_position)
     
     @world_position.setter
     def world_position(self, value):
         """Set world position (converts to local based on parent)."""
-        world_pos = np.array(value, dtype=np.float32)
+        world_pos = Vector3(value)
         
         if self._parent is None:
             self._local_position = world_pos
@@ -194,9 +195,9 @@ class Transform(Component):
             Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float32)
             R_inv = Rz @ Ry @ Rx  # Inverse of XYZ is ZYX with negated angles
             
-            delta = world_pos - parent._world_position
+            delta = (world_pos - parent._world_position).to_numpy()
             rotated_delta = delta @ R_inv
-            self._local_position = rotated_delta / parent._world_scale
+            self._local_position = Vector3(rotated_delta / parent._world_scale.to_numpy())
         
         self._mark_dirty()
     
@@ -221,22 +222,22 @@ class Transform(Component):
         self._mark_dirty()
     
     @property
-    def world_scale(self) -> tuple:
+    def world_scale(self) -> Vector3:
         """Get world scale (computed from parent + local)."""
         self._compute_world_transform()
-        return tuple(self._world_scale)
+        return Vector3(self._world_scale)
 
     @world_scale.setter
     def world_scale(self, value):
         """Set world scale (converts to local based on parent)."""
-        world_scale = np.array(value, dtype=np.float32)
+        world_scale = Vector3(value)
 
         if self._parent is None:
             self._local_scale = world_scale
         else:
             parent = self._parent
             parent._compute_world_transform()
-            self._local_scale = world_scale / parent._world_scale
+            self._local_scale = Vector3(world_scale.to_numpy() / parent._world_scale.to_numpy())
 
         self._mark_dirty()
     
@@ -245,43 +246,43 @@ class Transform(Component):
     # =========================================================================
     
     @property
-    def position(self) -> np.ndarray:
+    def position(self) -> Vector3:
         """Get local position (alias for local_position)."""
-        return self._local_position.copy()
+        return Vector3(self._local_position)
 
     @position.setter
     def position(self, value):
         self._update_prev_position()
-        self._local_position = np.array(value, dtype=np.float32)
+        self._local_position = Vector3(value)
         self._mark_dirty()
 
     @property
     def x(self) -> float:
-        return float(self._local_position[0])
+        return float(self._local_position.x)
 
     @x.setter
     def x(self, value: float):
-        self.position = (value, self._local_position[1], self._local_position[2])
+        self.position = (value, self._local_position.y, self._local_position.z)
 
     @property
     def y(self) -> float:
-        return float(self._local_position[1])
+        return float(self._local_position.y)
 
     @y.setter
     def y(self, value: float):
-        self.position = (self._local_position[0], value, self._local_position[2])
+        self.position = (self._local_position.x, value, self._local_position.z)
 
     @property
     def z(self) -> float:
-        return float(self._local_position[2])
+        return float(self._local_position.z)
 
     @z.setter
     def z(self, value: float):
-        self.position = (self._local_position[0], self._local_position[1], value)
+        self.position = (self._local_position.x, self._local_position.y, value)
 
     def move(self, dx: float = 0, dy: float = 0, dz: float = 0):
         self._update_prev_position()
-        self._local_position += np.array([dx, dy, dz], dtype=np.float32)
+        self._local_position = self._local_position + Vector3(dx, dy, dz)
         self._mark_dirty()
 
     @property
@@ -326,20 +327,20 @@ class Transform(Component):
 
     @property
     def scale(self) -> float:
-        return float(self._local_scale[0])
+        return float(self._local_scale.x)
 
     @scale.setter
     def scale(self, value: float):
-        self._local_scale = np.array([value, value, value], dtype=np.float32)
+        self._local_scale = Vector3(value, value, value)
         self._mark_dirty()
 
     @property
-    def scale_xyz(self) -> tuple:
-        return tuple(self._local_scale)
+    def scale_xyz(self) -> Vector3:
+        return Vector3(self._local_scale)
 
     @scale_xyz.setter
     def scale_xyz(self, value):
-        self._local_scale = np.array(value, dtype=np.float32)
+        self._local_scale = Vector3(value)
         self._mark_dirty()
 
     def get_model_matrix(self) -> np.ndarray:
@@ -359,8 +360,8 @@ class Transform(Component):
         R = Rx @ Ry @ Rz
         self._cached_rotation = R
 
-        s_x, s_y, s_z = self._world_scale
-        tx, ty, tz = self._world_position
+        s_x, s_y, s_z = self._world_scale.to_tuple()
+        tx, ty, tz = self._world_position.to_tuple()
         S = np.array([[s_x, 0, 0, 0], [0, s_y, 0, 0], [0, 0, s_z, 0], [0, 0, 0, 1]], dtype=np.float32)
         R4 = np.eye(4, dtype=np.float32)
         R4[:3, :3] = R
@@ -406,33 +407,34 @@ class Transform(Component):
         """Get down vector (world space, -Y)."""
         return -self.rotation_matrix[1, :]
 
-    def look_at(self, target: np.ndarray, world_up: np.ndarray = np.array([0, 1, 0], dtype=np.float32)):
+    def look_at(self, target: 'Vector3Like', world_up: 'Vector3Like' = (0, 1, 0)):
         """Look at a target position."""
         eye = self.world_position
-        target = np.array(target, dtype=np.float32)
+        target = Vector3(target)
+        world_up = Vector3(world_up)
         
         # Forward vector (from eye to target)
         # Note: Camera looks down -Z, so forward is target - eye
         f = target - eye
-        dist = np.linalg.norm(f)
+        dist = f.magnitude
         if dist < 1e-6:
             return
-        f = f / dist
+        f = f.normalized
         
         # Right vector
-        r = np.cross(f, world_up)
-        if np.linalg.norm(r) < 1e-6:
+        r = Vector3.cross(f, world_up)
+        if r.magnitude < 1e-6:
             # Handle case where looking straight up/down
-            r = np.array([1, 0, 0], dtype=np.float32)
+            r = Vector3.right()
         else:
-            r = r / np.linalg.norm(r)
+            r = r.normalized
             
         # Up vector
-        u = np.cross(r, f)
+        u = Vector3.cross(r, f)
         
         # Create rotation matrix [r, u, -f]
         # This transforms local basis to world basis
-        R = np.vstack([r, u, -f])
+        R = np.vstack([r.to_numpy(), u.to_numpy(), (-f).to_numpy()])
         
         # Extract Euler angles from rotation matrix
         # Assuming XYZ order (Rx @ Ry @ Rz)
