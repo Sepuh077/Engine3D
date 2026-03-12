@@ -79,15 +79,30 @@ class Vector3:
         """Get X component."""
         return self._x
     
+    @x.setter
+    def x(self, value: float):
+        """Set X component."""
+        self._x = float(value)
+    
     @property
     def y(self) -> float:
         """Get Y component."""
         return self._y
     
+    @y.setter
+    def y(self, value: float):
+        """Set Y component."""
+        self._y = float(value)
+
     @property
     def z(self) -> float:
         """Get Z component."""
         return self._z
+    
+    @z.setter
+    def z(self, value: float):
+        """Set Z component."""
+        self._z = float(value)
     
     @property
     def magnitude(self) -> float:
