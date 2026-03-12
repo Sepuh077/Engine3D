@@ -13,6 +13,8 @@ from src.engine3d.gameobject import GameObject
 from src.engine3d.object3d import create_cube, create_sphere, create_plane, Object3D
 from src.engine3d.component import InspectorField, InspectorFieldType
 
+from src.input import Input
+
 from .selection import EditorSelection
 from .viewport import ViewportWidget
 from .scene import EditorScene
@@ -1313,7 +1315,8 @@ class {class_name}(Script):
             elif event.button() == QtCore.Qt.MouseButton.MiddleButton: button = 2
             elif event.button() == QtCore.Qt.MouseButton.RightButton: button = 3
             if button > 0:
-                self._window._mouse_buttons.add(button)
+                Input._mouse_buttons.add(button)
+                Input._mouse_down_this_frame.add(button)
                 self._scene.on_mouse_press(event.pos().x(), event.pos().y(), button, 0)
             return
 
@@ -1336,7 +1339,8 @@ class {class_name}(Script):
             elif event.button() == QtCore.Qt.MouseButton.MiddleButton: button = 2
             elif event.button() == QtCore.Qt.MouseButton.RightButton: button = 3
             if button > 0:
-                self._window._mouse_buttons.discard(button)
+                Input._mouse_buttons.discard(button)
+                Input._mouse_up_this_frame.add(button)
                 self._scene.on_mouse_release(event.pos().x(), event.pos().y(), button, 0)
             return
 
@@ -1423,21 +1427,22 @@ class {class_name}(Script):
     def _on_key_pressed(self, event: QtGui.QKeyEvent) -> None:
         if not self._playing or self._paused:
             return
-        
+
         key = self._map_qt_key_to_pygame(event.key())
         if key:
-            self._window._keys_pressed.add(key)
+            Input._keys_pressed.add(key)
+            Input._keys_down_this_frame.add(key)
             self._scene.on_key_press(key, 0)
 
     def _on_key_released(self, event: QtGui.QKeyEvent) -> None:
         if not self._playing or self._paused:
             return
-            
+
         key = self._map_qt_key_to_pygame(event.key())
         if key:
-            self._window._keys_pressed.discard(key)
+            Input._keys_pressed.discard(key)
+            Input._keys_up_this_frame.add(key)
             self._scene.on_key_release(key, 0)
-
     def _map_qt_key_to_pygame(self, qt_key: int) -> Optional[int]:
         import pygame
         # Basic mapping for common keys

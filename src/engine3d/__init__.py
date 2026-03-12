@@ -29,7 +29,6 @@ from .transform import Transform
 from .object3d import Object3D, create_cube, create_sphere, create_plane
 from .camera import Camera3D
 from .light import Light3D, DirectionalLight3D, PointLight3D
-from .input.keys import Keys
 from src.types import Color, Vector3
 from .particle import (
     ParticleSystem,
@@ -99,7 +98,6 @@ __all__ = [
     'Light3D',
     'DirectionalLight3D',
     'PointLight3D',
-    'Keys',
     'Color',
     'Vector3',
     'ParticleSystem',

@@ -21,7 +21,7 @@ from .graphics.material import UnlitMaterial, LitMaterial, SpecularMaterial, Emi
 from .camera import Camera3D
 from .light import Light3D, DirectionalLight3D
 from .graphics.color import Color, ColorType
-from .input.keys import Keys
+from src.input import Keys, Input
 from .component import Script, Time
 
 # Import physics types with TYPE_CHECKING to avoid circular imports at module level
@@ -410,9 +410,7 @@ class Window3D:
         Time.delta_time = 0.0
         
         # Input state
-        self._keys_pressed = set()
-        self._mouse_position = (0, 0)
-        self._mouse_buttons = set()
+        # (Input state is now managed globally by the Input class)
         
         # Setup done flag
         self._setup_done = False
@@ -1004,20 +1002,35 @@ class Window3D:
     # =========================================================================
     # Input state
     # =========================================================================
-    
+
     def is_key_pressed(self, key: int) -> bool:
         """Check if a key is currently pressed."""
-        return key in self._keys_pressed
-    
+        return Input.get_key(key)
+
+    def is_key_down(self, key: int) -> bool:
+        """Check if a key was pressed down this frame."""
+        return Input.get_key_down(key)
+
+    def is_key_up(self, key: int) -> bool:
+        """Check if a key was released this frame."""
+        return Input.get_key_up(key)
+
     def is_mouse_button_pressed(self, button: int) -> bool:
         """Check if a mouse button is currently pressed."""
-        return button in self._mouse_buttons
-    
+        return Input.get_mouse_button(button)
+
+    def is_mouse_button_down(self, button: int) -> bool:
+        """Check if a mouse button was pressed down this frame."""
+        return Input.get_mouse_button_down(button)
+
+    def is_mouse_button_up(self, button: int) -> bool:
+        """Check if a mouse button was released this frame."""
+        return Input.get_mouse_button_up(button)
+
     @property
     def mouse_position(self) -> Tuple[int, int]:
         """Current mouse position."""
-        return self._mouse_position
-    
+        return Input.mouse_position    
     # =========================================================================
     # Lifecycle methods (override in subclass)
     # =========================================================================
@@ -1812,6 +1825,9 @@ class Window3D:
         """Process pygame events."""
         if not self._use_pygame_events:
             return
+        
+        Input._update_frame_start()
+        
         for event in pygame.event.get():
             # Pass to scene's canvas UI first
             if self._current_scene and self._current_scene.canvas.process_pygame_event(event):
@@ -1821,30 +1837,35 @@ class Window3D:
                 self._running = False
                 
             elif event.type == pygame.KEYDOWN:
-                self._keys_pressed.add(event.key)
+                Input._keys_pressed.add(event.key)
+                Input._keys_down_this_frame.add(event.key)
                 mods = pygame.key.get_mods()
                 if self._current_scene:
                     self._current_scene.on_key_press(event.key, mods)
                 self.on_key_press(event.key, mods)
                 
             elif event.type == pygame.KEYUP:
-                self._keys_pressed.discard(event.key)
+                Input._keys_pressed.discard(event.key)
+                Input._keys_up_this_frame.add(event.key)
                 mods = pygame.key.get_mods()
                 if self._current_scene:
                     self._current_scene.on_key_release(event.key, mods)
                 self.on_key_release(event.key, mods)
                 
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                self._mouse_buttons.add(event.button)
+                Input._mouse_buttons.add(event.button)
+                Input._mouse_down_this_frame.add(event.button)
                 x, y = event.pos
                 mods = pygame.key.get_mods()
                 
                 # Handle scroll wheel
                 if event.button == 4:  # Scroll up
+                    Input._mouse_scroll = (0, 1)
                     if self._current_scene:
                         self._current_scene.on_mouse_scroll(x, y, 0, 1)
                     self.on_mouse_scroll(x, y, 0, 1)
                 elif event.button == 5:  # Scroll down
+                    Input._mouse_scroll = (0, -1)
                     if self._current_scene:
                         self._current_scene.on_mouse_scroll(x, y, 0, -1)
                     self.on_mouse_scroll(x, y, 0, -1)
@@ -1854,7 +1875,8 @@ class Window3D:
                     self.on_mouse_press(x, y, event.button, mods)
                     
             elif event.type == pygame.MOUSEBUTTONUP:
-                self._mouse_buttons.discard(event.button)
+                Input._mouse_buttons.discard(event.button)
+                Input._mouse_up_this_frame.add(event.button)
                 x, y = event.pos
                 mods = pygame.key.get_mods()
                 if self._current_scene:
@@ -1864,7 +1886,8 @@ class Window3D:
             elif event.type == pygame.MOUSEMOTION:
                 x, y = event.pos
                 dx, dy = event.rel
-                self._mouse_position = (x, y)
+                Input._mouse_position = (x, y)
+                Input._mouse_delta = (dx, dy)
                 if self._current_scene:
                     self._current_scene.on_mouse_motion(x, y, dx, dy)
                 self.on_mouse_motion(x, y, dx, dy)

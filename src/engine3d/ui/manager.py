@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Callable
 import pygame
 
 from .core import UIElement, UIEvent, UILayer
+from src.input import Input
 
 
 class UIManager:
@@ -141,15 +142,14 @@ class UIManager:
             self._mouse_pos = event.pos
         
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            ui_event = UIEvent("mouse_down", event.pos[0], event.pos[1], 
+            ui_event = UIEvent("mouse_down", event.pos[0], event.pos[1],
                              button=event.button)
-            self._mouse_buttons.add(event.button)
-        
+            Input._mouse_buttons.add(event.button)
+
         elif event.type == pygame.MOUSEBUTTONUP:
             ui_event = UIEvent("mouse_up", event.pos[0], event.pos[1],
                              button=event.button)
-            self._mouse_buttons.discard(event.button)
-        
+            Input._mouse_buttons.discard(event.button)        
         elif event.type == pygame.KEYDOWN:
             ui_event = UIEvent("key_down", key=event.key, 
                              modifiers=pygame.key.get_mods())
