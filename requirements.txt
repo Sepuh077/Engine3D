@@ -17,3 +17,6 @@ moderngl-window>=2.4.0
 
 # Editor UI
 PySide6>=6.6.0
+
+# Test
+pytest==9.0.2
