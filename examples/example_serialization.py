@@ -23,9 +23,10 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
-from src.engine3d import Window3D, Keys, Color, GameObject, Time, Script
+from src.input import Keys
+from src.types import Color
+from src.engine3d import Window3D, GameObject, Time, Script
 from src.engine3d.scene import Scene3D
-from src.engine3d.object3d import create_cube, create_sphere, Object3D
 from src.physics import Rigidbody, BoxCollider
 
 

@@ -19,8 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Window3D, Scene3D, GameObject, Keys, Color, ParticleSystem, Time
+from src.engine3d import Window3D, Scene3D, GameObject, ParticleSystem, Time
 from src.engine3d.object3d import create_cube, create_sphere
+from src.input import Keys
+from src.types import Color
 
 
 class HierarchyScene(Scene3D):

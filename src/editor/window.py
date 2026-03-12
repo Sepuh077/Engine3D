@@ -5,13 +5,19 @@ from pathlib import Path
 from typing import Dict, Optional, Iterable, Any, List, Tuple
 
 import numpy as np
-from PySide6 import QtCore, QtGui, QtWidgets, QtOpenGLWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
-from src.engine3d.scene import Scene3D
-from src.engine3d.window import Window3D
-from src.engine3d.gameobject import GameObject
-from src.engine3d.object3d import create_cube, create_sphere, create_plane, Object3D
-from src.engine3d.component import InspectorField, InspectorFieldType
+from src.engine3d import (
+    Window3D,
+    GameObject,
+    create_cube,
+    create_sphere,
+    create_plane,
+    Object3D,
+    InspectorFieldType
+)
+
+from src.physics import Rigidbody, BoxCollider, CapsuleCollider, SphereCollider
 
 from src.input import Input
 
@@ -2132,7 +2138,7 @@ class {class_name}(Script):
             if isinstance(editor, QtWidgets.QDoubleSpinBox):
                 editor.valueChanged.connect(lambda: update_list_value())
             elif isinstance(editor, QtWidgets.QSpinBox):
-                editor.valueChanged.connect(lambda: update_listValue())
+                editor.valueChanged.connect(lambda: update_list_value())
             elif isinstance(editor, QtWidgets.QLineEdit):
                 editor.editingFinished.connect(lambda: update_list_value())
             

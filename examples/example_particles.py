@@ -7,28 +7,22 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.engine3d import (
-    Rigidbody,
     GameObject,
     Window3D, 
     Scene3D,
     Object3D, 
-    Color, 
     ParticleSystem, 
     ParticleBurst, 
-    create_sphere, 
-    create_cube,
     create_plane,
-    draw_text,
-    draw_rectangle,
     linear_size_over_lifetime,
     linear_color_over_lifetime,
     linear_velocity_over_lifetime,
     SphereShape,
     ConeShape,
     BoxShape,
-    Time,
 )
-from src.physics import BoxCollider, SphereCollider, CollisionMode
+from src.physics import BoxCollider, SphereCollider, CollisionMode, Rigidbody
+from src.types import Color
 
 
 class ParticleScene(Scene3D):

@@ -13,16 +13,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.engine3d import (
-    Rigidbody, 
-    Window3D, Scene3D, Keys, Color, Object3D, Time,
-    draw_text, draw_rectangle, draw_circle, draw_ellipse,
-    draw_polygon, draw_line, draw_image, get_window, PointLight3D, GameObject
+    Window3D, Scene3D, Object3D, Time,
+    draw_text, draw_rectangle, create_cube, create_plane,
+    draw_image, PointLight3D, GameObject
 )
-from src.engine3d.object3d import create_cube, create_plane
 from src.engine3d.ui import (
     UILayer, Button, CheckBox, Slider, ProgressBar, Panel, Label
 )
-from src.physics import ColliderType
+from src.physics import Rigidbody
+from src.input import Keys
+from src.types import Color
 
 
 class UIScene(Scene3D):

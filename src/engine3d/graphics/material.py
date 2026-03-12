@@ -1,6 +1,6 @@
 import numpy as np
-from typing import Tuple, Optional, Union
-from .color import Color, ColorType
+from src.types import Color, ColorType
+
 
 class Material:
     """Base class for all materials."""
@@ -17,15 +17,18 @@ class Material:
             return np.append(c, self.alpha)
         return c
 
+
 class UnlitMaterial(Material):
     """Material that ignores lighting and is always visible with its color."""
     def __init__(self, color: ColorType = Color.WHITE, alpha: float = 1.0):
         super().__init__(color, alpha)
 
+
 class LitMaterial(Material):
     """Lambert material with diffuse lighting."""
     def __init__(self, color: ColorType = Color.WHITE, alpha: float = 1.0):
         super().__init__(color, alpha)
+
 
 class SpecularMaterial(Material):
     """Phong / Blinn-Phong material for metal and plastic."""
@@ -42,11 +45,13 @@ class SpecularMaterial(Material):
             c /= 255.0
         return c[:3]
 
+
 class EmissiveMaterial(Material):
     """Material that glows and ignores lights around it."""
     def __init__(self, color: ColorType = Color.WHITE, alpha: float = 1.0, intensity: float = 1.0):
         super().__init__(color, alpha)
         self.intensity = intensity
+
 
 class TransparentMaterial(Material):
     """Material with explicit alpha transparency."""

@@ -17,11 +17,11 @@ from typing import List, Optional, Tuple, Union, TYPE_CHECKING
 
 from .gameobject import GameObject
 from .object3d import Object3D
-from .graphics.material import UnlitMaterial, LitMaterial, SpecularMaterial, EmissiveMaterial, TransparentMaterial
+from .graphics import UnlitMaterial, LitMaterial, SpecularMaterial, EmissiveMaterial, TransparentMaterial
 from .camera import Camera3D
-from .light import Light3D, DirectionalLight3D
-from .graphics.color import Color, ColorType
-from src.input import Keys, Input
+from .light import DirectionalLight3D
+from src.types import Color, ColorType
+from src.input import Input
 from .component import Script, Time
 
 # Import physics types with TYPE_CHECKING to avoid circular imports at module level

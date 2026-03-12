@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple, Union, TYPE_CHECKING
 
 import pygame
 
-from .graphics.color import Color, ColorType
+from src.types import Color, ColorType
 
 if TYPE_CHECKING:
     from .window import Window3D

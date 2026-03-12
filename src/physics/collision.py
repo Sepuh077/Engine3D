@@ -1,8 +1,3 @@
-from typing import Optional
-from dataclasses import dataclass
-import numpy as np
-
-from src.physics.collider import Collider
 from src.physics.geometry import closest_point_on_triangle
 from src.physics.collision_manifold import (
     CollisionManifold,

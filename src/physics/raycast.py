@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 from src.physics.collider import Collider
 from src.physics.types import ColliderType
-from src.physics.geometry import closest_point_on_triangle
 from src.engine3d.drawing import get_window
 
 @dataclass

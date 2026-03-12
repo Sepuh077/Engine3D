@@ -14,9 +14,11 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
-from src.engine3d import Rigidbody, Window3D, Scene3D, Keys, Color, Time
+from src.engine3d import Window3D, Scene3D, Time
 from src.engine3d.object3d import create_cube, create_plane
-from src.physics import BoxCollider, SphereCollider, Collider
+from src.physics import BoxCollider, SphereCollider, Collider, Rigidbody
+from src.input import Keys
+from src.types import Color
 
 
 class CollisionScene(Scene3D):

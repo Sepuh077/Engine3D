@@ -11,9 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import Rigidbody, Window3D, Scene3D, Keys, Color, Time
+from src.engine3d import Window3D, Scene3D, Time
 from src.engine3d.object3d import create_cube, create_plane
-from src.physics import BoxCollider, SphereCollider, CapsuleCollider, Collider
+from src.physics import BoxCollider, SphereCollider, CapsuleCollider, Collider, Rigidbody
+from src.input import Keys
+from src.types import Color
 
 
 class FPSCameraScene(Scene3D):

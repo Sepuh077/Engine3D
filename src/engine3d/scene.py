@@ -9,7 +9,7 @@ from .gameobject import GameObject
 from .object3d import Object3D
 from .camera import Camera3D
 from .light import DirectionalLight3D
-from .graphics.color import Color, ColorType
+from src.types import Color, ColorType
 from .ui.manager import UIManager
 
 if TYPE_CHECKING:

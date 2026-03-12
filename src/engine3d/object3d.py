@@ -2,12 +2,12 @@
 import hashlib
 import numpy as np
 import trimesh
-from typing import Tuple, Optional, List, TYPE_CHECKING
+from typing import Tuple, Optional, TYPE_CHECKING
 
 from .component import Component
 from src.engine3d.gameobject import GameObject
 from trimesh.visual.texture import TextureVisuals
-from .graphics.color import ColorType
+from src.types import ColorType
 from .graphics.material import Material, LitMaterial
 
 if TYPE_CHECKING:

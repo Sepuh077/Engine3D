@@ -2,7 +2,7 @@ from typing import Optional, TYPE_CHECKING, List
 import numpy as np
 
 from .component import Component
-from src.types import Vector3
+from src.types import Vector3, Vector3Like
 
 if TYPE_CHECKING:
     from .gameobject import GameObject
