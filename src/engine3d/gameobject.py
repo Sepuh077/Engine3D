@@ -240,17 +240,27 @@ class GameObject:
         return obj
 
     def _to_prefab_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "_id": self._id,
             "name": self.name,
             "tag": self.tag,
             "components": [self._component_to_prefab(comp, idx) for idx, comp in enumerate(self.components)],
         }
+        # Store prefab source path if this GameObject is from a prefab
+        if hasattr(self, '_prefab') and self._prefab is not None:
+            if hasattr(self._prefab, 'path'):
+                data["_prefab_path"] = self._prefab.path
+        return data
 
     @classmethod
     def _from_prefab_dict(cls, data: Dict[str, Any]) -> "GameObject":
         game_object = cls(name=data.get("name", "GameObject"), _id=data.get("_id"))
         game_object.tag = data.get("tag")
+
+        # Store prefab path for later restoration
+        prefab_path = data.get("_prefab_path")
+        if prefab_path:
+            game_object._prefab_path = prefab_path
 
         components_data = data.get("components", [])
         for comp_data in components_data:
@@ -638,3 +648,291 @@ class GameObject:
             List of all GameObjects with matching name
         """
         return [obj for obj in scene.objects if obj.name == name]
+
+
+# =========================================================================
+# Prefab System
+# =========================================================================
+
+class Prefab:
+    """
+    A prefab represents a template GameObject that can be instantiated multiple times.
+    
+    When a prefab is modified, all instances are automatically updated (except position).
+    Each instance maintains its own position but shares all other properties with the prefab.
+    
+    Usage:
+        # Create a prefab from a GameObject
+        prefab = Prefab.create_from_gameobject(my_object, "path/to/prefab.prefab")
+        
+        # Instantiate the prefab in a scene
+        instance = prefab.instantiate(scene, position=(1, 2, 3))
+        
+        # When you modify the prefab, all instances update
+        prefab.update_from_gameobject(another_object)
+        # Now all instances reflect the changes
+    """
+    
+    # Global registry of all loaded prefabs (path -> Prefab)
+    _registry: Dict[str, 'Prefab'] = {}
+    
+    def __init__(self, path: str):
+        """
+        Initialize a prefab from a file path.
+        
+        Args:
+            path: Path to the .prefab file
+        """
+        self.path = path
+        self._data: Optional[Dict[str, Any]] = None
+        self._instances: List[GameObject] = []  # All instances created from this prefab
+        
+        # Load the data
+        self._load()
+        
+        # Register this prefab
+        Prefab._registry[path] = self
+    
+    @classmethod
+    def create_from_gameobject(cls, game_object: GameObject, path: str) -> 'Prefab':
+        """
+        Create a new prefab from a GameObject and save it to disk.
+        
+        Args:
+            game_object: The GameObject to create a prefab from
+            path: Path to save the .prefab file
+            
+        Returns:
+            The created Prefab instance
+        """
+        # Ensure .prefab extension
+        if not path.endswith('.prefab'):
+            path = path + '.prefab'
+        
+        # Create a copy of the game object data for the prefab
+        # We need to create a fresh ID for the prefab template
+        prefab_data = {
+            "_id": str(uuid.uuid4()),
+            "name": game_object.name,
+            "tag": game_object.tag,
+            "components": [GameObject._component_to_prefab(comp, idx) for idx, comp in enumerate(game_object.components)],
+        }
+        
+        # Save to disk
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(prefab_data, handle, indent=2)
+        
+        # Create and return the prefab
+        prefab = cls(path)
+        prefab._data = prefab_data
+        return prefab
+    
+    @classmethod
+    def load(cls, path: str) -> 'Prefab':
+        """
+        Load a prefab from a file path. Returns cached instance if already loaded.
+        
+        Args:
+            path: Path to the .prefab file
+            
+        Returns:
+            The Prefab instance
+        """
+        # Check registry first
+        if path in cls._registry:
+            return cls._registry[path]
+        
+        return cls(path)
+    
+    def _load(self) -> None:
+        """Load the prefab data from disk."""
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                self._data = json.load(handle)
+        except FileNotFoundError:
+            self._data = None
+        except Exception as e:
+            print(f"Error loading prefab {self.path}: {e}")
+            self._data = None
+    
+    def reload(self) -> None:
+        """Reload the prefab from disk and update all instances."""
+        self._load()
+        self._update_all_instances()
+    
+    def _update_all_instances(self) -> None:
+        """Update all instances to reflect the current prefab data."""
+        if self._data is None:
+            return
+        
+        for instance in self._instances[:]:  # Copy list to avoid modification during iteration
+            if instance is not None:
+                self._apply_to_instance(instance)
+    
+    def _apply_to_instance(self, instance: GameObject) -> None:
+        """
+        Apply the prefab data to an instance, preserving its position.
+        
+        Args:
+            instance: The GameObject instance to update
+        """
+        if self._data is None:
+            return
+        
+        # Store current position (not shared)
+        current_position = instance.transform.position
+        current_parent = instance.transform.parent
+        current_name = instance.name
+        
+        # Rebuild the instance from prefab data
+        # We need to be careful not to break existing references
+        
+        # Update tag (shared across instances)
+        instance.tag = self._data.get("tag")
+        
+        # Update components (except Transform which we handle specially)
+        # Remove all non-Transform components
+        instance.components = [c for c in instance.components if isinstance(c, Transform)]
+        
+        # Re-add components from prefab data
+        components_data = self._data.get("components", [])
+        for comp_data in components_data:
+            component = GameObject._component_from_prefab(comp_data)
+            if component is None:
+                continue
+            if isinstance(component, Transform):
+                # Keep existing transform but update its properties (except position)
+                # Actually we want to preserve the instance's transform entirely
+                # So skip the transform from prefab
+                continue
+            else:
+                instance.add_component(component)
+        
+        # Restore instance-specific fields (not shared)
+        instance.transform.position = current_position
+        instance.transform.parent = current_parent
+        instance.name = current_name
+        
+        # Resolve component references
+        # This is tricky - we need the scene's go_registry
+        # For now, we'll skip this during instance update
+        # It will be resolved when the scene is fully loaded
+    
+    def instantiate(self, scene=None, position: Optional[Tuple[float, float, float]] = None,
+                    rotation: Optional[Tuple[float, float, float]] = None,
+                    parent: Optional[Transform] = None) -> GameObject:
+        """
+        Create a new instance of this prefab.
+        
+        Args:
+            scene: Optional scene to add the instance to
+            position: Optional position for the instance (defaults to origin)
+            rotation: Optional rotation for the instance
+            parent: Optional parent transform
+            
+        Returns:
+            The new GameObject instance
+        """
+        if self._data is None:
+            raise ValueError(f"Cannot instantiate prefab: data not loaded from {self.path}")
+        
+        # Create a new GameObject from prefab data
+        obj = GameObject._from_prefab_dict(self._data)
+        
+        # Set position
+        if position is not None:
+            obj.transform.position = position
+        else:
+            obj.transform.position = (0, 0, 0)
+        
+        # Set rotation
+        if rotation is not None:
+            obj.transform.rotation = rotation
+        
+        # Set parent
+        if parent is not None:
+            obj.transform.parent = parent
+        
+        # Register as an instance
+        self._instances.append(obj)
+        obj._prefab = self  # Store reference to prefab
+        
+        # Add to scene if provided
+        if scene is not None:
+            scene.add_object(obj)
+        
+        return obj
+    
+    def register_instance(self, instance: GameObject) -> None:
+        """
+        Register an existing GameObject as an instance of this prefab.
+        
+        Args:
+            instance: The GameObject to register as an instance
+        """
+        if instance not in self._instances:
+            self._instances.append(instance)
+            instance._prefab = self
+    
+    def unregister_instance(self, instance: GameObject) -> None:
+        """
+        Unregister a GameObject from being an instance of this prefab.
+        
+        Args:
+            instance: The GameObject to unregister
+        """
+        if instance in self._instances:
+            self._instances.remove(instance)
+            if hasattr(instance, '_prefab'):
+                delattr(instance, '_prefab')
+    
+    def save(self) -> None:
+        """Save the current prefab data to disk."""
+        if self._data is None:
+            return
+        
+        with open(self.path, "w", encoding="utf-8") as handle:
+            json.dump(self._data, handle, indent=2)
+    
+    def update_from_gameobject(self, game_object: GameObject) -> None:
+        """
+        Update this prefab from a GameObject and propagate changes to all instances.
+        
+        Args:
+            game_object: The GameObject to use as the new prefab template
+        """
+        # Create new prefab data
+        self._data = {
+            "_id": self._data.get("_id", str(uuid.uuid4())) if self._data else str(uuid.uuid4()),
+            "name": game_object.name,
+            "tag": game_object.tag,
+            "components": [GameObject._component_to_prefab(comp, idx) for idx, comp in enumerate(game_object.components)],
+        }
+        
+        # Save to disk
+        self.save()
+        
+        # Update all instances
+        self._update_all_instances()
+    
+    @property
+    def name(self) -> str:
+        """Get the name of this prefab."""
+        if self._data:
+            return self._data.get("name", "Prefab")
+        return "Prefab"
+    
+    @property
+    def instances(self) -> List[GameObject]:
+        """Get all instances of this prefab."""
+        return self._instances[:]
+    
+    @classmethod
+    def get_prefab_for_path(cls, path: str) -> Optional['Prefab']:
+        """Get a prefab by its file path."""
+        return cls._registry.get(path)
+    
+    @classmethod
+    def clear_registry(cls) -> None:
+        """Clear the prefab registry."""
+        cls._registry.clear()

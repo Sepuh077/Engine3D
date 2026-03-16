@@ -50,9 +50,146 @@ class NoWheelSlider(QtWidgets.QSlider):
         event.ignore()
 
 
+class FileTreeView(QtWidgets.QTreeView):
+    """Custom tree view for files that supports drops from hierarchy to create prefabs."""
+    prefab_created = QtCore.Signal(str, str)  # (gameobject_name, prefab_path)
+    prefab_instantiated = QtCore.Signal(str)  # (prefab_path)
+    
+    def __init__(self, editor_window, parent=None):
+        super().__init__(parent)
+        self.editor_window = editor_window
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self._drag_source_item = None
+    
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
+        """Accept drops from hierarchy tree."""
+        # Check if this is a drag from hierarchy (has our custom MIME data)
+        if event.mimeData().hasText():
+            # Could be from hierarchy - accept
+            event.acceptProposedAction()
+        elif event.mimeData().hasUrls():
+            # File URLs - accept for normal file operations
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dragMoveEvent(self, event: QtGui.QDragMoveEvent) -> None:
+        """Handle drag move."""
+        if event.mimeData().hasText() or event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dropEvent(self, event: QtGui.QDropEvent) -> None:
+        """Handle drop from hierarchy to create prefab."""
+        if event.mimeData().hasText():
+            # This is a drop from hierarchy - create prefab
+            text = event.mimeData().text()
+            # Format: "gameobject:<object_id>" or similar
+            if text.startswith("gameobject:"):
+                obj_id = text.split(":", 1)[1]
+                # Find the GameObject by ID
+                for obj in self.editor_window._scene.objects:
+                    if obj._id == obj_id:
+                        # Create prefab at drop location
+                        self._create_prefab_from_gameobject(obj)
+                        event.acceptProposedAction()
+                        return
+            event.ignore()
+        else:
+            super().dropEvent(event)
+    
+    def _create_prefab_from_gameobject(self, game_object: GameObject) -> None:
+        """Create a prefab from a GameObject and save it to the project."""
+        from PySide6 import QtWidgets
+        from src.engine3d.gameobject import Prefab
+        
+        # Get the drop location (current directory in file view)
+        index = self.currentIndex()
+        if index.isValid():
+            path = self.editor_window._file_model.filePath(index)
+            if not self.editor_window._file_model.isDir(index):
+                # If file selected, use its directory
+                path = str(Path(path).parent)
+        else:
+            # Use project root
+            path = str(self.editor_window.project_root)
+        
+        # Default filename based on GameObject name
+        default_name = f"{game_object.name}.prefab"
+        default_path = str(Path(path) / default_name)
+        
+        # Ask for save location
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Prefab",
+            default_path,
+            "Prefab Files (*.prefab)"
+        )
+        
+        if file_path:
+            try:
+                # Create the prefab
+                prefab = Prefab.create_from_gameobject(game_object, file_path)
+                
+                # Link original GameObject to the prefab
+                prefab.register_instance(game_object)
+                
+                # Refresh file view
+                self.editor_window._file_model.setRootPath(str(self.editor_window.project_root))
+                
+                # Select the new prefab file
+                new_index = self.editor_window._file_model.index(file_path)
+                if new_index.isValid():
+                    self.setCurrentIndex(new_index)
+                
+                # Show success message
+                QtWidgets.QMessageBox.information(
+                    self, "Prefab Created",
+                    f"Prefab '{game_object.name}' saved to:\n{file_path}"
+                )
+                
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self, "Error", f"Failed to create prefab:\n{e}"
+                )
+    
+    def startDrag(self, supported_actions) -> None:
+        """Start a drag operation."""
+        index = self.currentIndex()
+        if index.isValid():
+            path = self.editor_window._file_model.filePath(index)
+            ext = Path(path).suffix.lower()
+            
+            # For .prefab files, create custom MIME data
+            if ext == '.prefab':
+                mime_data = QtCore.QMimeData()
+                mime_data.setText(f"prefab:{path}")
+                
+                drag = QtGui.QDrag(self)
+                drag.setMimeData(mime_data)
+                
+                # Set a simple pixmap
+                pixmap = QtGui.QPixmap(100, 20)
+                pixmap.fill(QtGui.QColor(100, 150, 200))
+                painter = QtGui.QPainter(pixmap)
+                painter.drawText(5, 15, Path(path).name)
+                painter.end()
+                drag.setPixmap(pixmap)
+                
+                drag.exec(QtCore.Qt.DropAction.CopyAction)
+                return
+        
+        super().startDrag(supported_actions)
+
+
 class HierarchyTreeWidget(QtWidgets.QTreeWidget):
     """Custom tree widget that supports drag-drop parenting of GameObjects."""
     object_parented = QtCore.Signal(object, object)  # (child_obj, parent_obj or None)
+    prefab_dropped = QtCore.Signal(str)  # (prefab_path)
     
     def __init__(self, editor_window, parent=None):
         super().__init__(parent)
@@ -67,10 +204,65 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
     
     def startDrag(self, supported_actions) -> None:
         self._dragged_item = self.currentItem()
+        
+        # Create custom MIME data for the dragged GameObject
+        if self._dragged_item:
+            # Find the GameObject for this item
+            for obj, item in self.editor_window._object_items.items():
+                if item is self._dragged_item:
+                    # Create MIME data with GameObject ID
+                    mime_data = QtCore.QMimeData()
+                    mime_data.setText(f"gameobject:{obj._id}")
+                    
+                    drag = QtGui.QDrag(self)
+                    drag.setMimeData(mime_data)
+                    
+                    # Set a simple pixmap
+                    pixmap = QtGui.QPixmap(100, 20)
+                    pixmap.fill(QtGui.QColor(150, 100, 200))
+                    painter = QtGui.QPainter(pixmap)
+                    painter.drawText(5, 15, obj.name)
+                    painter.end()
+                    drag.setPixmap(pixmap)
+                    
+                    drag.exec(QtCore.Qt.DropAction.MoveAction)
+                    return
+        
         super().startDrag(supported_actions)
 
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
+        """Accept drops from file view (prefabs)."""
+        if event.mimeData().hasText():
+            text = event.mimeData().text()
+            if text.startswith("prefab:"):
+                event.acceptProposedAction()
+                return
+            elif text.startswith("gameobject:"):
+                # Internal move - let parent handle
+                super().dragEnterEvent(event)
+                return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event: QtGui.QDragMoveEvent) -> None:
+        """Handle drag move for prefabs."""
+        if event.mimeData().hasText():
+            text = event.mimeData().text()
+            if text.startswith("prefab:"):
+                event.acceptProposedAction()
+                return
+        super().dragMoveEvent(event)
+
     def dropEvent(self, event: QtGui.QDropEvent) -> None:
-        """Handle drop event to parent objects."""
+        """Handle drop event to parent objects or instantiate prefabs."""
+        # Check if this is a prefab drop
+        if event.mimeData().hasText():
+            text = event.mimeData().text()
+            if text.startswith("prefab:"):
+                prefab_path = text.split(":", 1)[1]
+                # Handle prefab instantiation
+                self._instantiate_prefab(prefab_path, event)
+                return
+        
         # Get the item being dragged
         dragged_item = self._dragged_item or self.currentItem()
         if not dragged_item:
@@ -107,6 +299,50 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
         # Accept the event
         event.acceptProposedAction()
         self._dragged_item = None
+    
+    def _instantiate_prefab(self, prefab_path: str, event: QtGui.QDropEvent) -> None:
+        """Instantiate a prefab at the drop location."""
+        from src.engine3d.gameobject import Prefab
+        
+        try:
+            # Load the prefab
+            prefab = Prefab.load(prefab_path)
+            
+            # Get drop position - if dropping on an item, use that as parent
+            drop_item = self.itemAt(event.position().toPoint())
+            parent_obj = None
+            
+            if drop_item:
+                for obj, item in self.editor_window._object_items.items():
+                    if item is drop_item:
+                        parent_obj = obj
+                        break
+            
+            # Instantiate the prefab
+            self.editor_window._viewport.makeCurrent()
+            instance = prefab.instantiate(
+                scene=self.editor_window._scene,
+                position=tuple(self.editor_window._camera_control['target']),
+                parent=parent_obj.transform if parent_obj else None
+            )
+            
+            # Refresh hierarchy
+            self.editor_window._refresh_hierarchy()
+            self.editor_window._select_object(instance)
+            self.editor_window._viewport.update()
+            self.editor_window._viewport.doneCurrent()
+            
+            # Mark scene as dirty
+            self.editor_window._mark_scene_dirty()
+            
+            event.acceptProposedAction()
+            
+        except Exception as e:
+            from PySide6 import QtWidgets
+            QtWidgets.QMessageBox.critical(
+                self, "Error", f"Failed to instantiate prefab:\n{e}"
+            )
+            event.ignore()
     
     def _is_descendant(self, potential_ancestor: GameObject, potential_descendant: GameObject) -> bool:
         """Check if potential_descendant is a descendant of potential_ancestor."""
@@ -361,12 +597,20 @@ class EditorWindow(QtWidgets.QMainWindow):
         content_layout.addWidget(QtWidgets.QLabel("Name", content))
         content_layout.addWidget(self._inspector_name)
 
+        # Prefab source indicator (hidden by default)
+        self._prefab_source_label = QtWidgets.QLabel(content)
+        self._prefab_source_label.setStyleSheet("color: #64c8ff; font-style: italic; padding: 2px;")
+        self._prefab_source_label.setVisible(False)
+        content_layout.addWidget(self._prefab_source_label)
+
         # Tag field - dropdown with existing tags + ability to add new
         self._inspector_tag = QtWidgets.QComboBox(content)
         self._inspector_tag.setEditable(True)
         self._inspector_tag.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.InsertAtBottom)
         self._inspector_tag.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self._inspector_tag.activated.connect(self._set_selected_tag)
+        if self._inspector_tag.lineEdit() is not None:
+            self._inspector_tag.lineEdit().editingFinished.connect(self._set_selected_tag)
         # No editingFinished on lineEdit - activated handles selection, 
         # and per-frame update handles text sync
         content_layout.addWidget(QtWidgets.QLabel("Tag", content))
@@ -409,6 +653,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         add_comp_btn = QtWidgets.QPushButton("+")
         add_comp_btn.setFixedWidth(30)
         add_comp_btn.clicked.connect(self._show_add_component_menu)
+        self._add_component_button = add_comp_btn
         comp_header.addWidget(add_comp_btn)
         content_layout.addLayout(comp_header)
 
@@ -424,6 +669,11 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._inspector_dock.setWidget(panel)
 
     def _show_add_component_menu(self) -> None:
+        # If editing a prefab, use prefab add menu
+        if hasattr(self, '_current_prefab') and self._current_prefab is not None:
+            self._show_add_prefab_component_menu()
+            return
+        
         if not self._selection.game_object:
             return
 
@@ -860,12 +1110,14 @@ class {class_name}(Script):
         self._file_model.setRootPath(str(self.project_root))
         self._file_model.setFilter(QtCore.QDir.Filter.AllEntries | QtCore.QDir.Filter.NoDotAndDotDot)
 
-        self._file_view = QtWidgets.QTreeView(panel)
+        self._file_view = FileTreeView(self, panel)
         self._file_view.setModel(self._file_model)
         self._file_view.setRootIndex(self._file_model.index(str(self.project_root)))
         self._file_view.setColumnWidth(0, 280)
         self._file_view.setDragEnabled(True)
+        self._file_view.setAcceptDrops(True)
         self._file_view.doubleClicked.connect(self._on_file_double_clicked)
+        self._file_view.selectionModel().selectionChanged.connect(self._on_file_selection_changed)
         layout.addWidget(self._file_view)
 
         self._files_dock.setWidget(panel)
@@ -889,6 +1141,12 @@ class {class_name}(Script):
 
     def _add_3d_object_from_path(self, path: str) -> None:
         ext = Path(path).suffix.lower()
+        
+        # Handle .prefab files
+        if ext == '.prefab':
+            self._instantiate_prefab_from_file(path)
+            return
+        
         # Common 3D file extensions supported by trimesh
         if ext in {'.obj', '.gltf', '.glb', '.stl', '.ply', '.off'}:
             try:
@@ -907,6 +1165,355 @@ class {class_name}(Script):
                 self._viewport.doneCurrent()
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load 3D object:\n{e}")
+    
+    def _instantiate_prefab_from_file(self, path: str) -> None:
+        """Instantiate a prefab from a file path."""
+        from src.engine3d.gameobject import Prefab
+        
+        try:
+            self._viewport.makeCurrent()
+            
+            # Load the prefab
+            prefab = Prefab.load(path)
+            
+            # Instantiate
+            instance = prefab.instantiate(
+                scene=self._scene,
+                position=tuple(self._camera_control['target'])
+            )
+            
+            # Refresh hierarchy
+            self._refresh_hierarchy()
+            self._select_object(instance)
+            self._viewport.update()
+            self._viewport.doneCurrent()
+            
+            # Mark scene as dirty
+            self._mark_scene_dirty()
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to instantiate prefab:\n{e}")
+    
+    def _on_file_selection_changed(self) -> None:
+        """Handle file selection change in the files panel."""
+        indexes = self._file_view.selectionModel().selectedIndexes()
+        if not indexes:
+            return
+        
+        # Get the first selected index
+        index = indexes[0]
+        if not index.isValid():
+            return
+        
+        path = self._file_model.filePath(index)
+        ext = Path(path).suffix.lower()
+        
+        # Clear hierarchy selection to ensure exclusive selection
+        if hasattr(self, '_hierarchy_tree') and self._hierarchy_tree is not None:
+            self._hierarchy_tree.clearSelection()
+            self._select_object(None)
+        
+        # If it's a .prefab file, show the prefab inspector
+        if ext == '.prefab':
+            self._show_prefab_inspector(path)
+        else:
+            # Clear prefab inspector if not a prefab file
+            self._current_prefab_path = None
+            self._current_prefab = None
+    
+    def _show_prefab_inspector(self, path: str) -> None:
+        """Show the prefab inspector for a .prefab file."""
+        from src.engine3d.gameobject import Prefab
+        
+        try:
+            # Load the prefab
+            self._current_prefab_path = path
+            self._current_prefab = Prefab.load(path)
+            
+            if self._current_prefab._data is None:
+                QtWidgets.QMessageBox.warning(self, "Warning", "Failed to load prefab data.")
+                return
+            
+            # Deselect any scene object
+            self._select_object(None)
+            
+            # Clear hierarchy selection
+            self._hierarchy_tree.clearSelection()
+            
+            # Update inspector to show prefab data
+            self._update_prefab_inspector()
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load prefab:\n{e}")
+    
+    def _update_prefab_inspector(self) -> None:
+        """Update the inspector panel to show the current prefab's data."""
+        if not hasattr(self, '_current_prefab') or self._current_prefab is None:
+            return
+        
+        data = self._current_prefab._data
+        if data is None:
+            return
+        
+        # Block signals while updating
+        self._set_inspector_signals_blocked(True)
+        
+        # Set name
+        self._inspector_name.setEnabled(True)
+        self._inspector_name.setText(data.get("name", "Prefab"))
+        
+        # Set tag
+        self._inspector_tag.setEnabled(True)
+        from src.engine3d.component import Tag
+        if self._inspector_tag.count() == 0:
+            existing_tags = Tag.all_tags()
+            self._inspector_tag.addItems(existing_tags)
+        tag = data.get("tag")
+        if tag:
+            if self._inspector_tag.findText(tag) >= 0:
+                self._inspector_tag.setCurrentText(tag)
+            else:
+                self._inspector_tag.addItem(tag)
+                self._inspector_tag.setCurrentText(tag)
+        else:
+            self._inspector_tag.setCurrentText("")
+        
+        # Hide transform group (prefabs don't have a fixed position)
+        self._transform_group.setVisible(False)
+        
+        # Build component fields using full GameObject inspector logic
+        self._build_prefab_component_fields(data)
+        
+        # Hide prefab source label in prefab mode
+        self._prefab_source_label.setVisible(False)
+        
+        self._set_inspector_signals_blocked(False)
+    
+    def _build_prefab_component_fields(self, data: dict) -> None:
+        """Build component inspector fields from prefab data using full component UI."""
+        self._clear_component_fields()
+        
+        # Build a temporary GameObject from prefab data for inspector rendering
+        from src.engine3d.gameobject import GameObject
+        
+        temp_obj = GameObject._from_prefab_dict(data)
+        temp_obj._prefab_edit_target = data
+        
+        # Build component fields for the temp object
+        self._build_component_fields(temp_obj)
+        
+        # Store temp object for later use
+        self._prefab_temp_object = temp_obj
+    
+    def _show_add_prefab_component_menu(self) -> None:
+        """Show add component menu for prefabs."""
+        if not hasattr(self, '_prefab_temp_object') or self._prefab_temp_object is None:
+            return
+        
+        # Use existing add component menu logic but target temp object
+        menu = QtWidgets.QMenu(self)
+        from src.engine3d.light import PointLight3D, DirectionalLight3D
+        from src.physics.rigidbody import Rigidbody
+        from src.physics.collider import BoxCollider, SphereCollider, CapsuleCollider
+        from src.engine3d.particle import ParticleSystem
+        
+        actions = {
+            "Point Light": lambda: self._add_component_to_prefab(PointLight3D()),
+            "Directional Light": lambda: self._add_component_to_prefab(DirectionalLight3D()),
+            "Box Collider": lambda: self._add_component_to_prefab(BoxCollider()),
+            "Sphere Collider": lambda: self._add_component_to_prefab(SphereCollider()),
+            "Capsule Collider": lambda: self._add_component_to_prefab(CapsuleCollider()),
+            "Rigidbody": lambda: self._add_component_to_prefab(Rigidbody()),
+            "Particle System": lambda: self._add_component_to_prefab(ParticleSystem()),
+        }
+        
+        for name, callback in actions.items():
+            action = menu.addAction(name)
+            action.triggered.connect(callback)
+        
+        # Add separator before scripts
+        menu.addSeparator()
+        
+        # Scan for existing script files in the project
+        scripts = self._find_script_files()
+        if scripts:
+            scripts_menu = menu.addMenu("Scripts")
+            for script_path, class_name in scripts:
+                action = scripts_menu.addAction(class_name)
+                action.triggered.connect(lambda checked, p=script_path, c=class_name: self._add_existing_script_to_prefab(p, c))
+        
+        # Add "New Script..." option
+        new_script_action = menu.addAction("New Script...")
+        new_script_action.triggered.connect(self._add_script_component_to_prefab)
+        
+        menu.exec(QtGui.QCursor.pos())
+    
+    def _add_existing_script_to_prefab(self, file_path: Path, class_name: str) -> None:
+        """Load and add an existing script as a prefab component."""
+        self._load_and_add_script_to_prefab(file_path, class_name)
+    
+    def _add_script_component_to_prefab(self) -> None:
+        """Open dialog to create a new script component for prefab."""
+        from PySide6 import QtWidgets
+        
+        # Dialog for script name
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "New Script", "Enter script class name:"
+        )
+        if not ok or not name.strip():
+            return
+        
+        script_name = name.strip()
+        # Validate class name (Python identifier)
+        if not script_name.isidentifier():
+            QtWidgets.QMessageBox.warning(
+                self, "Invalid Name", "Script name must be a valid Python identifier."
+            )
+            return
+        
+        # File dialog for save location
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Script",
+            str(self.project_root / f"{script_name}.py"),
+            "Python Files (*.py)"
+        )
+        if not file_path:
+            return
+        
+        file_path = Path(file_path)
+        
+        # Create the script file
+        try:
+            self._create_script_file(file_path, script_name)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "Error", f"Failed to create script file:\n{e}"
+            )
+            return
+        
+        # Add the script component to prefab
+        self._load_and_add_script_to_prefab(file_path, script_name)
+    
+    def _load_and_add_script_to_prefab(self, file_path: Path, class_name: str) -> None:
+        """Dynamically load the script and add it to prefab as a component."""
+        import importlib.util
+        import sys
+        from PySide6 import QtWidgets
+        
+        try:
+            # Add the project root to sys.path if not already there
+            project_root = str(self.project_root)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            
+            # Create a unique module name to allow reloading
+            try:
+                relative_path = file_path.relative_to(self.project_root)
+                module_name = '.'.join(relative_path.with_suffix('').parts)
+            except ValueError:
+                module_name = file_path.stem
+            
+            # Ensure parent packages exist for dotted module names
+            if "." in module_name:
+                import types
+                parts = module_name.split(".")
+                for i in range(1, len(parts)):
+                    pkg_name = ".".join(parts[:i])
+                    if pkg_name not in sys.modules:
+                        pkg_module = types.ModuleType(pkg_name)
+                        pkg_module.__path__ = [str(self.project_root / Path(*parts[:i]))]
+                        sys.modules[pkg_name] = pkg_module
+            
+            # Load the module
+            spec = importlib.util.spec_from_file_location(
+                module_name, str(file_path)
+            )
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Could not load script from {file_path}")
+            
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            
+            # Get the class from the module
+            if not hasattr(module, class_name):
+                raise AttributeError(f"Script file does not contain class '{class_name}'")
+            
+            script_class = getattr(module, class_name)
+            script_instance = script_class()
+            
+            # Add to prefab
+            self._add_component_to_prefab(script_instance)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(
+                self, "Error", f"Failed to load script:\n{e}"
+            )
+    
+    def _add_component_to_prefab(self, component) -> None:
+        """Add a component to the prefab being edited."""
+        if not hasattr(self, '_prefab_temp_object') or self._prefab_temp_object is None:
+            return
+        
+        self._prefab_temp_object.add_component(component)
+        self._save_prefab_from_temp_object()
+        self._update_prefab_inspector()
+    
+    def _remove_component_from_prefab(self, component) -> None:
+        """Remove a component from the prefab being edited."""
+        if not hasattr(self, '_prefab_temp_object') or self._prefab_temp_object is None:
+            return
+        
+        # Don't allow removing Transform
+        from src.engine3d.transform import Transform
+        if isinstance(component, Transform):
+            return
+        
+        if component in self._prefab_temp_object.components:
+            self._prefab_temp_object.components.remove(component)
+            component.game_object = None
+        
+        self._save_prefab_from_temp_object()
+        self._update_prefab_inspector()
+    
+    def _save_prefab_from_temp_object(self) -> None:
+        """Save the prefab data from the temporary object and propagate changes."""
+        if not hasattr(self, '_current_prefab') or self._current_prefab is None:
+            return
+        
+        if not hasattr(self, '_prefab_temp_object') or self._prefab_temp_object is None:
+            return
+        
+        # Update prefab data from temp object
+        self._current_prefab.update_from_gameobject(self._prefab_temp_object)
+        
+        # Refresh component UI to ensure it stays in sync
+        self._components_dirty = True
+        
+        # Mark scene as dirty
+        self._mark_scene_dirty()
+    
+    def _on_prefab_field_changed(self) -> None:
+        """Handle changes to prefab fields."""
+        if not hasattr(self, '_current_prefab') or self._current_prefab is None:
+            return
+        
+        # Sync changes from temp object to prefab
+        if hasattr(self, '_prefab_temp_object') and self._prefab_temp_object is not None:
+            self._save_prefab_from_temp_object()
+        
+        # Update all instances
+        self._current_prefab.reload()
+        
+        # Mark scene as dirty
+        self._mark_scene_dirty()
+    
+    def _sync_prefab_data_from_ui(self) -> None:
+        """Deprecated: Prefab data is now synced via temp object."""
+        return
 
     def _on_play_clicked(self) -> None:
         """Run the current scene as a game in the viewport."""
@@ -981,6 +1588,10 @@ class {class_name}(Script):
                 # Re-create scene from data
                 new_scene = EditorScene._from_scene_dict(self._original_scene_data)
                 self._scene = new_scene
+                
+                # Restore prefab connections
+                self._restore_prefab_connections()
+                
                 self._window.show_scene(self._scene)
                 
                 self._refresh_hierarchy()
@@ -1169,6 +1780,9 @@ class {class_name}(Script):
             self._scene.editor_label = self._scene_name
             self._scene_dirty = False
             
+            # Restore prefab connections for all objects
+            self._restore_prefab_connections()
+            
             # Show the loaded scene
             if self._window:
                 self._window.show_scene(self._scene)
@@ -1184,6 +1798,25 @@ class {class_name}(Script):
             import traceback
             traceback.print_exc()
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load scene:\n{e}")
+    
+    def _restore_prefab_connections(self) -> None:
+        """Restore prefab connections for all objects in the scene."""
+        from src.engine3d.gameobject import Prefab
+        
+        for obj in self._scene.objects:
+            # Check if object has a stored prefab path
+            prefab_path = getattr(obj, '_prefab_path', None)
+            if prefab_path:
+                try:
+                    # Load the prefab
+                    prefab = Prefab.load(prefab_path)
+                    # Register this object as an instance
+                    prefab.register_instance(obj)
+                except Exception as e:
+                    print(f"Warning: Could not restore prefab connection for {obj.name}: {e}")
+                    # Clear the stored path if prefab can't be loaded
+                    if hasattr(obj, '_prefab_path'):
+                        delattr(obj, '_prefab_path')
 
     def _save_scene(self) -> None:
         """Save the current scene to its file."""
@@ -1560,6 +2193,19 @@ class {class_name}(Script):
             item = QtWidgets.QTreeWidgetItem([obj.name])
             self._object_items[obj] = item
             
+            # Color code prefab instances
+            if hasattr(obj, '_prefab') and obj._prefab is not None:
+                # Prefab instance - use a different color (blue/cyan) and prefix
+                display_name = f"◈ {obj.name}"  # Diamond symbol prefix
+                item.setText(0, display_name)
+                item.setForeground(0, QtGui.QBrush(QtGui.QColor(100, 200, 255)))
+                # Store prefab path in tooltip
+                if hasattr(obj._prefab, 'path'):
+                    item.setToolTip(0, f"Prefab: {obj._prefab.path}")
+            elif hasattr(self, '_current_prefab') and self._current_prefab is not None:
+                # When viewing a prefab, mark it
+                pass
+            
             if parent_item:
                 parent_item.addChild(item)
             else:
@@ -1670,6 +2316,13 @@ class {class_name}(Script):
         if not items:
             self._select_object(None)
             return
+        
+        # Clear file selection to ensure exclusive selection
+        if hasattr(self, '_file_view') and self._file_view is not None:
+            self._file_view.clearSelection()
+            self._current_prefab = None
+            self._current_prefab_path = None
+        
         selected_item = items[0]
         for obj, item in self._object_items.items():
             if item is selected_item:
@@ -1721,6 +2374,11 @@ class {class_name}(Script):
                 child.blockSignals(blocked)
 
     def _rename_selected(self) -> None:
+        # Check if we're in prefab mode
+        if hasattr(self, '_current_prefab') and self._current_prefab is not None:
+            self._on_prefab_field_changed()
+            return
+        
         obj = self._selection.game_object
         if not obj:
             return
@@ -1735,16 +2393,31 @@ class {class_name}(Script):
         self._viewport.update()
 
     def _set_selected_tag(self) -> None:
-        """Set the tag of the selected GameObject from inspector."""
-        obj = self._selection.game_object
-        if not obj:
-            return
+        """Set the tag of the selected GameObject or prefab from inspector."""
         tag_text = self._inspector_tag.currentText().strip()
-        obj.tag = tag_text if tag_text else None
+        tag_value = tag_text if tag_text else None
+        
         # Register new tags without re-populating (just add to registry)
         from src.engine3d.component import Tag
         if tag_text:
             Tag.create(tag_text)  # Auto-registers if new
+        
+        # Check if we're in prefab mode
+        if hasattr(self, '_current_prefab') and self._current_prefab is not None:
+            if hasattr(self, '_prefab_temp_object') and self._prefab_temp_object is not None:
+                self._prefab_temp_object.tag = tag_value
+                self._save_prefab_from_temp_object()
+                self._update_prefab_inspector()
+            else:
+                self._on_prefab_field_changed()
+            self._viewport.update()
+            self._mark_scene_dirty()
+            return
+        
+        obj = self._selection.game_object
+        if not obj:
+            return
+        obj.tag = tag_value
         self._viewport.update()
         self._mark_scene_dirty()
 
@@ -1779,6 +2452,12 @@ class {class_name}(Script):
 
     def _update_inspector_fields(self, force_components: bool = False) -> None:
         obj = self._selection.game_object
+        
+        # Check if we're in prefab mode (viewing a prefab file)
+        if not obj and hasattr(self, '_current_prefab') and self._current_prefab is not None:
+            # Keep the prefab inspector open, don't clear it
+            return
+        
         if not obj:
             self._inspector_name.setText("")
             self._inspector_tag.blockSignals(True)
@@ -1787,6 +2466,7 @@ class {class_name}(Script):
             self._inspector_tag.blockSignals(False)
             self._inspector_name.setEnabled(False)
             self._inspector_tag.setEnabled(False)
+            self._prefab_source_label.setVisible(False)
             for fields in [self._pos_fields, self._rot_fields, self._scale_fields]:
                 for f in fields:
                     f.setValue(0.0)
@@ -1807,6 +2487,17 @@ class {class_name}(Script):
 
         if not self._inspector_name.hasFocus():
             self._inspector_name.setText(obj.name)
+        
+        # Show/hide prefab source indicator
+        if hasattr(obj, '_prefab') and obj._prefab is not None:
+            if hasattr(obj._prefab, 'path'):
+                prefab_name = Path(obj._prefab.path).name
+                self._prefab_source_label.setText(f"📦 From Prefab: {prefab_name}")
+                self._prefab_source_label.setVisible(True)
+            else:
+                self._prefab_source_label.setVisible(False)
+        else:
+            self._prefab_source_label.setVisible(False)
         
         self._inspector_tag.setEnabled(True)
         if not self._inspector_tag.hasFocus():
@@ -1927,7 +2618,10 @@ class {class_name}(Script):
         
         # Add remove button
         remove_btn = QtWidgets.QPushButton("Remove Component")
-        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
+            remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component_from_prefab(c))
+        else:
+            remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
         main_layout.addWidget(remove_btn)
         
         box._inspector_field_widgets = field_widgets
@@ -2461,6 +3155,14 @@ class {class_name}(Script):
         comp.set_inspector_field_value(field_name, value)
         self._viewport.update()
         self._mark_scene_dirty()
+        
+        # If editing a prefab, save changes
+        if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
+            self._save_prefab_from_temp_object()
+            if hasattr(self, '_current_prefab') and self._current_prefab is not None:
+                self._current_prefab.reload()
+            if hasattr(self, '_current_prefab') and self._current_prefab is not None:
+                self._current_prefab.reload()
 
     def _on_color_field_changed(self, comp, field_name: str, widget: QtWidgets.QWidget) -> None:
         """Handle when a color field value changes."""
@@ -2473,6 +3175,12 @@ class {class_name}(Script):
         comp.set_inspector_field_value(field_name, tuple(channels))
         self._viewport.update()
         self._mark_scene_dirty()
+        
+        # If editing a prefab, save changes
+        if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
+            self._save_prefab_from_temp_object()
+            if hasattr(self, '_current_prefab') and self._current_prefab is not None:
+                self._current_prefab.reload()
 
     def _on_vector3_field_changed(self, comp, field_name: str, widget: QtWidgets.QWidget) -> None:
         """Handle when a vector3 field value changes."""
@@ -2488,6 +3196,12 @@ class {class_name}(Script):
         
         self._viewport.update()
         self._mark_scene_dirty()
+        
+        # If editing a prefab, save changes
+        if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
+            self._save_prefab_from_temp_object()
+            if hasattr(self, '_current_prefab') and self._current_prefab is not None:
+                self._current_prefab.reload()
 
     def _refresh_component_fields(self, obj: GameObject) -> None:
         from src.engine3d.light import Light3D
@@ -2580,7 +3294,10 @@ class {class_name}(Script):
         
         # Add remove button
         remove_btn = QtWidgets.QPushButton("Remove Component")
-        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
+            remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component_from_prefab(c))
+        else:
+            remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
         main_layout.addWidget(remove_btn)
         
         return box
@@ -2631,7 +3348,10 @@ class {class_name}(Script):
         
         # Add remove button
         remove_btn = QtWidgets.QPushButton("Remove Component")
-        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
+            remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component_from_prefab(c))
+        else:
+            remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
         main_layout.addWidget(remove_btn)
 
         return box

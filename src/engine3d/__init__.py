@@ -23,7 +23,7 @@ Example:
 
 from .window import Window3D
 from .scene import Scene3D
-from .gameobject import GameObject
+from .gameobject import GameObject, Prefab
 from .component import Component, Script, WaitForSeconds, WaitEndOfFrame, Time, InspectorField, InspectorFieldType, Tag
 from .transform import Transform
 from .object3d import Object3D, create_cube, create_sphere, create_plane
@@ -89,6 +89,7 @@ __all__ = [
     'Window3D',
     'Scene3D', 
     'GameObject',
+    'Prefab',
     'run_editor',
     'Component',
     'Script',
