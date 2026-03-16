@@ -3,13 +3,14 @@ Camera3D - First-person or orbit camera for 3D scenes.
 """
 import numpy as np
 import math
-from typing import Tuple, TYPE_CHECKING, Union
+from typing import Tuple, TYPE_CHECKING, Union, Optional
 
-from .component import Component
+from .component import Component, InspectorField
 from src.types import Vector3
 
 if TYPE_CHECKING:
     from .gameobject import GameObject
+    from .graphics.material import SkyboxMaterial
 
 
 class Camera3D(Component):
@@ -17,7 +18,19 @@ class Camera3D(Component):
     3D Camera component.
     
     Position and rotation are controlled by the GameObject's transform.
+    
+    Attributes:
+        skybox: Optional SkyboxMaterial for rendering environment background.
+                Set this to show a skybox behind the scene.
     """
+    
+    # Skybox material as InspectorField for editor support
+    # Note: Material type is handled specially in InspectorField via name check
+    skybox = InspectorField(
+        "SkyboxMaterial",  # String type name - resolved by editor
+        default=None,
+        tooltip="Skybox material for environment background (equirectangular or cubemap)"
+    )
     
     def __init__(self, 
                  fov: float = 60.0,
@@ -35,6 +48,7 @@ class Camera3D(Component):
         self.fov = fov
         self.near = near
         self.far = far
+        # skybox is handled by InspectorField descriptor
         
         # Frustum cache
         self._frustum_cache = {

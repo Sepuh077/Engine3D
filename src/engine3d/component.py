@@ -1,4 +1,4 @@
-from typing import Optional, TYPE_CHECKING, Generator, Type, TypeVar, List, Any, Generic, Tuple, Union, overload
+from typing import Optional, TYPE_CHECKING, Generator, Type, TypeVar, List, Any, Generic, Tuple, Union, overload, Set
 from dataclasses import dataclass
 from enum import Enum
 
@@ -13,6 +13,97 @@ T = TypeVar('T', bound="Component")
 _T = TypeVar('_T')
 
 
+# =========================================================================
+# Tag System (Unity-like)
+# =========================================================================
+
+class Tag:
+    """
+    A tag that can be assigned to GameObjects for categorization.
+    
+    Similar to Unity's Tag system, tags allow you to identify groups of
+    GameObjects for filtering, querying, and game logic.
+    
+    Tags can be created dynamically or registered with TagManager for
+    centralized management.
+    
+    Example:
+        # Create a tag
+        player_tag = Tag("Player")
+        enemy_tag = Tag("Enemy")
+        
+        # Assign to GameObject
+        player.tag = player_tag
+        # Or just use string
+        player.tag = "Player"
+        
+        # Query by tag
+        players = GameObject.get_all_by_tag(scene, "Player")
+    """
+    
+    # Registry of all known tags (for auto-completion and validation)
+    _registry: Set[str] = set()
+    
+    def __init__(self, name: str):
+        """
+        Create a new tag with the given name.
+        
+        Args:
+            name: The tag name (e.g., "Player", "Enemy", "Collectible")
+        """
+        self.name = name
+        # Auto-register
+        Tag._registry.add(name)
+    
+    @classmethod
+    def create(cls, name: str) -> "Tag":
+        """Create and register a new tag."""
+        return cls(name)
+    
+    @classmethod
+    def get_or_create(cls, name: str) -> "Tag":
+        """Get existing tag or create new one."""
+        for tag_name in cls._registry:
+            if tag_name == name:
+                return cls(name)
+        return cls(name)
+    
+    @classmethod
+    def all_tags(cls) -> List[str]:
+        """Get list of all registered tag names."""
+        return sorted(list(cls._registry))
+    
+    @classmethod
+    def clear_registry(cls) -> None:
+        """Clear all registered tags."""
+        cls._registry.clear()
+    
+    def __str__(self) -> str:
+        return self.name
+    
+    def __repr__(self) -> str:
+        return f"Tag('{self.name}')"
+    
+    def __eq__(self, other) -> bool:
+        if isinstance(other, Tag):
+            return self.name == other.name
+        if isinstance(other, str):
+            return self.name == other
+        return False
+    
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+
+# Convenience: Pre-defined common tags
+Tag.create("Player")
+Tag.create("Enemy")
+Tag.create("Collectible")
+Tag.create("Ground")
+Tag.create("UI")
+Tag.create("Camera")
+
+
 class InspectorFieldType(Enum):
     """Types of inspector fields supported."""
     FLOAT = "float"
@@ -25,6 +116,7 @@ class InspectorFieldType(Enum):
     LIST = "list"
     COMPONENT_REF = "component_ref"
     GAMEOBJECT_REF = "gameobject_ref"
+    MATERIAL_REF = "material_ref"
 
 
 @dataclass
@@ -152,6 +244,12 @@ class InspectorField(Generic[_T]):
             # Use string comparison to avoid circular import
             if field_type.__name__ == 'GameObject' and field_type.__module__ == 'src.engine3d.gameobject':
                 self.field_type = InspectorFieldType.GAMEOBJECT_REF
+            elif field_type.__name__ == 'Material' and 'graphics.material' in field_type.__module__:
+                self.field_type = InspectorFieldType.MATERIAL_REF
+                self._original_field_type = field_type
+            elif field_type.__name__ in ('SkyboxMaterial',) and 'graphics.material' in field_type.__module__:
+                self.field_type = InspectorFieldType.MATERIAL_REF
+                self._original_field_type = field_type
             elif issubclass(field_type, Enum):
                 self.field_type = InspectorFieldType.ENUM
                 # Auto-generate enum options if not provided
@@ -163,6 +261,15 @@ class InspectorField(Generic[_T]):
                 self._original_field_type = field_type
             else:
                 raise ValueError(f"Unsupported field type: {field_type}")
+        elif isinstance(field_type, str):
+            # String type name for deferred/lazy resolution (e.g., "SkyboxMaterial")
+            # Store for editor to resolve later
+            self._custom_type_name = field_type
+            if "Material" in field_type or "Material" in field_type.lower():
+                self.field_type = InspectorFieldType.MATERIAL_REF
+            else:
+                # Default to component ref for unknown custom types
+                self.field_type = InspectorFieldType.COMPONENT_REF
         else:
             raise ValueError(f"Unsupported field type: {field_type}")
         
@@ -208,6 +315,8 @@ class InspectorField(Generic[_T]):
             return None  # No component reference by default
         elif self.field_type == InspectorFieldType.GAMEOBJECT_REF:
             return None  # No GameObject reference by default
+        elif self.field_type == InspectorFieldType.MATERIAL_REF:
+            return None  # No material reference by default
         return None
     
     def __set_name__(self, owner: type, name: str):

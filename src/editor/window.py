@@ -361,6 +361,17 @@ class EditorWindow(QtWidgets.QMainWindow):
         content_layout.addWidget(QtWidgets.QLabel("Name", content))
         content_layout.addWidget(self._inspector_name)
 
+        # Tag field - dropdown with existing tags + ability to add new
+        self._inspector_tag = QtWidgets.QComboBox(content)
+        self._inspector_tag.setEditable(True)
+        self._inspector_tag.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.InsertAtBottom)
+        self._inspector_tag.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        self._inspector_tag.activated.connect(self._set_selected_tag)
+        # No editingFinished on lineEdit - activated handles selection, 
+        # and per-frame update handles text sync
+        content_layout.addWidget(QtWidgets.QLabel("Tag", content))
+        content_layout.addWidget(self._inspector_tag)
+
         self._transform_group = QtWidgets.QGroupBox("Transform", content)
         form = QtWidgets.QFormLayout(self._transform_group)
 
@@ -539,7 +550,8 @@ class EditorWindow(QtWidgets.QMainWindow):
 
     def _create_script_file(self, file_path: Path, class_name: str) -> None:
         """Create a new script file with the template."""
-        script_template = f'''from src.engine3d import Script, Time, InspectorField, Color, Vector3, GameObject, Transform
+        script_template = f'''from src.engine3d import Script, Time, InspectorField, GameObject, Transform, Camera3D
+from src.types import Color, Vector3
 
 
 class {class_name}(Script):
@@ -1722,6 +1734,20 @@ class {class_name}(Script):
             self._object_items[obj].setText(0, name)
         self._viewport.update()
 
+    def _set_selected_tag(self) -> None:
+        """Set the tag of the selected GameObject from inspector."""
+        obj = self._selection.game_object
+        if not obj:
+            return
+        tag_text = self._inspector_tag.currentText().strip()
+        obj.tag = tag_text if tag_text else None
+        # Register new tags without re-populating (just add to registry)
+        from src.engine3d.component import Tag
+        if tag_text:
+            Tag.create(tag_text)  # Auto-registers if new
+        self._viewport.update()
+        self._mark_scene_dirty()
+
     def _on_transform_changed(self) -> None:
         obj = self._selection.game_object
         if not obj:
@@ -1755,7 +1781,12 @@ class {class_name}(Script):
         obj = self._selection.game_object
         if not obj:
             self._inspector_name.setText("")
+            self._inspector_tag.blockSignals(True)
+            self._inspector_tag.clear()
+            self._inspector_tag.setCurrentText("")
+            self._inspector_tag.blockSignals(False)
             self._inspector_name.setEnabled(False)
+            self._inspector_tag.setEnabled(False)
             for fields in [self._pos_fields, self._rot_fields, self._scale_fields]:
                 for f in fields:
                     f.setValue(0.0)
@@ -1776,6 +1807,28 @@ class {class_name}(Script):
 
         if not self._inspector_name.hasFocus():
             self._inspector_name.setText(obj.name)
+        
+        self._inspector_tag.setEnabled(True)
+        if not self._inspector_tag.hasFocus():
+            # Only populate items once per object selection (check if empty)
+            from src.engine3d.component import Tag
+            if self._inspector_tag.count() == 0:
+                self._inspector_tag.blockSignals(True)
+                existing_tags = Tag.all_tags()
+                self._inspector_tag.addItems(existing_tags)
+                self._inspector_tag.blockSignals(False)
+            # Just update current text without clearing
+            self._inspector_tag.blockSignals(True)
+            if obj.tag:
+                if self._inspector_tag.findText(obj.tag) >= 0:
+                    self._inspector_tag.setCurrentText(obj.tag)
+                else:
+                    # Tag not in dropdown yet, add it
+                    self._inspector_tag.addItem(obj.tag)
+                    self._inspector_tag.setCurrentText(obj.tag)
+            else:
+                self._inspector_tag.setCurrentText("")
+            self._inspector_tag.blockSignals(False)
 
         pos = obj.transform.position
         rot = obj.transform.rotation
@@ -1920,6 +1973,8 @@ class {class_name}(Script):
             return self._create_component_ref_field(comp, field_name, field_info, current_value)
         elif field_info.field_type == InspectorFieldType.GAMEOBJECT_REF:
             return self._create_gameobject_ref_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.MATERIAL_REF:
+            return self._create_material_ref_field(comp, field_name, field_info, current_value)
         else:
             # Fallback: just show a label
             label = QtWidgets.QLabel(str(current_value))
@@ -2317,6 +2372,89 @@ class {class_name}(Script):
         
         combo.currentIndexChanged.connect(on_selection_changed)
         return combo
+
+    def _create_material_ref_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QWidget:
+        """Create a file path widget for SkyboxMaterial reference."""
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        
+        # Text field showing current texture path or .mat3d file
+        text_field = QtWidgets.QLineEdit()
+        text_field.setPlaceholderText("(No skybox)")
+        
+        # Extract display path from SkyboxMaterial
+        if current_value is not None:
+            # Prefer .mat3d file reference if available
+            if hasattr(current_value, '_mat_file_path') and current_value._mat_file_path:
+                text_field.setText(current_value._mat_file_path)
+            elif hasattr(current_value, 'texture_path') and current_value.texture_path:
+                text_field.setText(current_value.texture_path)
+            elif hasattr(current_value, 'front') and current_value.front:
+                text_field.setText("(cubemap)")
+        
+        if field_info.tooltip:
+            text_field.setToolTip(field_info.tooltip)
+        
+        # Browse button
+        browse_btn = QtWidgets.QPushButton("...")
+        browse_btn.setFixedWidth(30)
+        browse_btn.setToolTip("Browse for skybox texture or .mat3d file")
+        
+        # Clear button
+        clear_btn = QtWidgets.QPushButton("×")
+        clear_btn.setFixedWidth(25)
+        clear_btn.setToolTip("Clear skybox")
+        
+        def on_browse():
+            from PySide6 import QtWidgets
+            from src.engine3d.graphics.material import MATERIAL_FILE_EXT
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                "Select Skybox Texture or Material",
+                "",
+                f"Material Files (*{MATERIAL_FILE_EXT});;Images (*.png *.jpg *.jpeg *.hdr *.exr *.bmp);;All Files (*)"
+            )
+            if path:
+                # Load .mat3d file or create SkyboxMaterial with texture path
+                from src.engine3d.graphics.material import SkyboxMaterial, MATERIAL_FILE_EXT
+                if path.endswith(MATERIAL_FILE_EXT):
+                    try:
+                        mat = SkyboxMaterial.load(path)
+                        # Store file reference for display persistence
+                        mat._mat_file_path = path
+                    except Exception:
+                        mat = SkyboxMaterial(texture_path=path)
+                        mat._mat_file_path = None
+                else:
+                    mat = SkyboxMaterial(texture_path=path)
+                    mat._mat_file_path = None
+                # Update text field display
+                if getattr(mat, '_mat_file_path', None):
+                    text_field.setText(mat._mat_file_path)
+                elif mat.texture_path:
+                    text_field.setText(mat.texture_path)
+                else:
+                    text_field.setText("(cubemap)")
+                comp.set_inspector_field_value(field_name, mat)
+                self._viewport.update()
+                self._mark_scene_dirty()
+        
+        def on_clear():
+            text_field.clear()
+            comp.set_inspector_field_value(field_name, None)
+            self._viewport.update()
+            self._mark_scene_dirty()
+        
+        browse_btn.clicked.connect(on_browse)
+        clear_btn.clicked.connect(on_clear)
+        
+        layout.addWidget(text_field)
+        layout.addWidget(browse_btn)
+        layout.addWidget(clear_btn)
+        
+        return container
 
     def _on_inspector_field_changed(self, comp, field_name: str, value: Any) -> None:
         """Handle when an inspector field value changes."""

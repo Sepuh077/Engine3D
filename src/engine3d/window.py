@@ -1244,6 +1244,155 @@ class Window3D:
             surf.set_alpha(int(alpha * 255))
         self._2d_surface.blit(surf, (x, y))
     
+    def _render_skybox(self, camera, view, projection):
+        """Render skybox background using camera's skybox material."""
+        skybox = getattr(camera, 'skybox', None)
+        if not skybox:
+            return
+        
+        # Check for gradient skybox
+        gradient_colors = None
+        if hasattr(skybox, 'get_gradient_colors'):
+            gradient_colors = skybox.get_gradient_colors()
+        
+        if gradient_colors:
+            self._render_gradient_skybox(gradient_colors)
+        elif skybox.has_texture:
+            self._render_texture_skybox(skybox, view, projection)
+        else:
+            # Solid color skybox
+            try:
+                if hasattr(skybox, 'color_vec4'):
+                    color = skybox.color_vec4
+                    if color[0] > 1.0 or color[1] > 1.0 or color[2] > 1.0:
+                        color = color / 255.0
+                    r, g, b = float(color[0]), float(color[1]), float(color[2])
+                else:
+                    r, g, b = 0.5, 0.7, 1.0
+            except Exception:
+                r, g, b = 0.5, 0.7, 1.0
+            self._ctx.clear(r, g, b)
+    
+    def _render_texture_skybox(self, skybox, view, projection):
+        """Render a texture-based skybox with proper equirectangular UV mapping."""
+        try:
+            # Load texture to GPU if needed
+            if not hasattr(skybox, '_gl_texture') or skybox._gl_texture is None:
+                if skybox.texture_path:
+                    import os
+                    from PIL import Image
+                    if os.path.exists(skybox.texture_path):
+                        img = Image.open(skybox.texture_path).convert('RGBA')
+                        img_data = np.array(img)
+                        h, w = img_data.shape[:2]
+                        tex = self._ctx.texture((w, h), 4, img_data.tobytes())
+                        tex.build_mipmaps()
+                        skybox._gl_texture = tex
+                    else:
+                        self._ctx.clear(1.0, 1.0, 1.0)  # White = missing
+                        return
+                else:
+                    self._ctx.clear(1.0, 1.0, 1.0)
+                    return
+            
+            # Create equirectangular sphere (cached with proper UVs)
+            if not hasattr(self, '_skybox_eq_sphere'):
+                self._skybox_eq_sphere = self._create_equirect_skybox_vao(radius=100.0)
+            
+            if not self._skybox_eq_sphere:
+                self._ctx.clear(0.5, 0.6, 1.0)
+                return
+            
+            # Rotation-only view (remove translation)
+            view_no_trans = view.copy()
+            view_no_trans[3, :3] = 0
+            
+            mvp = view_no_trans @ projection
+            
+            # Set uniforms
+            self._program['mvp'].write(mvp.astype(np.float32).tobytes())
+            self._program['model'].write(np.eye(4, dtype=np.float32).tobytes())
+            self._program['use_texture'].value = True
+            self._program['material_type'].value = 0  # Unlit
+            self._program['base_color'].value = (1.0, 1.0, 1.0, 1.0)
+            
+            # Bind texture
+            skybox._gl_texture.use(location=0)
+            self._program['tex'].value = 0
+            
+            # Disable depth, render inside of sphere
+            self._ctx.depth_mask = False
+            self._ctx.front_face = 'cw'  # Inside view
+            
+            self._skybox_eq_sphere.render(moderngl.TRIANGLES)
+            
+            # Restore
+            self._ctx.front_face = 'ccw'
+            self._ctx.depth_mask = True
+            
+        except Exception:
+            self._ctx.clear(0.5, 0.6, 1.0)
+    
+    def _create_equirect_skybox_vao(self, radius=100.0, segs=32, rings=16):
+        """Create a sphere VAO with proper equirectangular UVs for skybox."""
+        verts = []
+        idxs = []
+        
+        for ring in range(rings + 1):
+            phi = np.pi * (0.5 - ring / rings)  # -PI/2 to PI/2 (bottom to top)
+            y = np.sin(phi) * radius
+            r = np.cos(phi) * radius
+            
+            for seg in range(segs + 1):
+                theta = 2 * np.pi * seg / segs
+                x = np.cos(theta) * r
+                z = np.sin(theta) * r
+                # Equirectangular: u=lon (0-1), v=lat (0=bottom, 1=top)
+                u = seg / segs
+                v = 1.0 - ring / rings  # Invert: top of texture = sky
+                verts.extend([x, y, z, u, v])
+        
+        for ring in range(rings):
+            for seg in range(segs):
+                i0 = ring * (segs + 1) + seg
+                i1 = i0 + 1
+                i2 = (ring + 1) * (segs + 1) + seg
+                i3 = i2 + 1
+                idxs.extend([i0, i2, i1, i1, i2, i3])
+        
+        # Build interleaved: position(3f) + color(3f) + texcoord(2f) = 8 floats
+        # Color is white since texture provides colors
+        full_verts = []
+        for i in range(0, len(verts), 5):
+            x, y, z, u, v = verts[i:i+5]
+            full_verts.extend([x, y, z, 1.0, 1.0, 1.0, u, v])  # white color
+        
+        vbo = self._ctx.buffer(np.array(full_verts, dtype='f4').tobytes())
+        ibo = self._ctx.buffer(np.array(idxs, dtype='i4').tobytes())
+        
+        # Layout: position(3f) + color(3f) + texcoord(2f)
+        return self._ctx.vertex_array(
+            self._program,
+            [(vbo, '3f 3f 2f', 'in_position', 'in_color', 'in_texcoord')],
+            ibo
+        )
+    
+    def _render_gradient_skybox(self, gradient_colors):
+        """Render a Unity-like gradient skybox."""
+        try:
+            def normalize_color(c):
+                if c is None:
+                    return (0.5, 0.6, 1.0)
+                c = np.array(c, dtype=np.float32)
+                if c.max() > 1.0:
+                    c /= 255.0
+                return tuple(c[:3])
+            
+            top = normalize_color(gradient_colors.get('top'))
+            self._ctx.clear(*top)
+        except Exception:
+            self._ctx.clear(0.5, 0.6, 1.0)
+
     def _render_2d_overlay(self):
         """Render 2D surface as textured quad on top of 3D scene."""
         # Draw UI elements from current scene's canvas
@@ -1631,6 +1780,12 @@ class Window3D:
                     vao.render(moderngl.TRIANGLES, vertices=count)
                 else:
                     vao.render(moderngl.TRIANGLES)
+
+        # ------------------------------------------------------------
+        # Draw Skybox (before opaque, with rotation-only view, depth disabled)
+        # ------------------------------------------------------------
+        if camera and getattr(camera, 'skybox', None) is not None:
+            self._render_skybox(camera, view, projection)
 
         # ------------------------------------------------------------
         # Draw Opaque (Depth Write ON)

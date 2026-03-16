@@ -1,23 +1,29 @@
-from typing import List, Optional, Type, TypeVar, Generator, Any, Dict, Tuple
+from typing import List, Optional, Type, TypeVar, Generator, Any, Dict, Tuple, Union, TYPE_CHECKING
 import importlib
 import json
 import uuid
 
 import numpy as np
 
-from .component import Component, Script, WaitForSeconds, WaitEndOfFrame, WaitForFrames, Time
+from .component import Component, Script, WaitForSeconds, WaitEndOfFrame, WaitForFrames, Time, Tag
 from .transform import Transform
 from src.types import Vector3
+
+if TYPE_CHECKING:
+    from .scene import Scene3D
 
 T = TypeVar('T', bound=Component)
 
 # Global registry for resolving component references during deserialization
 _component_ref_registry: Dict[str, 'GameObject'] = {}
 
+# Global registry of all scenes (for static query methods)
+_scenes_registry: List['Scene3D'] = []
+
 class GameObject:
     def __init__(self, name: str = "GameObject", _id: Optional[str] = None):
         self.name = name
-        self.tag = None
+        self._tag: Optional[Union[str, Tag]] = None
         self.components: List[Component] = []
         
         # Unique ID for serialization (auto-generated, not exposed to users)
@@ -30,6 +36,27 @@ class GameObject:
         # Coroutines state
         self._active_coroutines: List[Dict[str, Any]] = []
         self._end_of_frame_coroutines: List[Dict[str, Any]] = []
+
+    @property
+    def tag(self) -> Optional[str]:
+        """Get the tag as a string (works with both Tag objects and strings)."""
+        if self._tag is None:
+            return None
+        if isinstance(self._tag, Tag):
+            return self._tag.name
+        return str(self._tag)
+    
+    @tag.setter
+    def tag(self, value: Optional[Union[str, Tag]]):
+        """Set the tag (accepts string, Tag object, or None)."""
+        if value is None:
+            self._tag = None
+        elif isinstance(value, Tag):
+            self._tag = value
+        else:
+            # Store as string, but also register with Tag system
+            self._tag = str(value)
+            Tag.create(str(value))  # Auto-register string tags
 
     def add_component(self, component: Component) -> Component:
         component.game_object = self
@@ -512,3 +539,102 @@ class GameObject:
                 if temp_obj:
                     component.mesh = temp_obj.mesh
                     component._post_process_geometry(f"primitive_plane_{width}_{height}")
+
+    # =========================================================================
+    # Static Query Methods (Unity-like Find functions)
+    # =========================================================================
+
+    @classmethod
+    def get_by_tag(cls, scene: 'Scene3D', tag: Union[str, Tag]) -> Optional['GameObject']:
+        """
+        Find the first GameObject with the specified tag in a scene.
+        
+        Args:
+            scene: The scene to search in
+            tag: Tag name (string) or Tag object to search for
+            
+        Returns:
+            First GameObject with matching tag, or None if not found
+        """
+        tag_name = tag.name if isinstance(tag, Tag) else str(tag)
+        for obj in scene.objects:
+            if obj.tag == tag_name:
+                return obj
+        return None
+
+    @classmethod
+    def get_all_by_tag(cls, scene: 'Scene3D', tag: Union[str, Tag]) -> List['GameObject']:
+        """
+        Find all GameObjects with the specified tag in a scene.
+        
+        Args:
+            scene: The scene to search in
+            tag: Tag name (string) or Tag object to search for
+            
+        Returns:
+            List of all GameObjects with matching tag
+        """
+        tag_name = tag.name if isinstance(tag, Tag) else str(tag)
+        return [obj for obj in scene.objects if obj.tag == tag_name]
+
+    @classmethod
+    def get_by_type(cls, scene: 'Scene3D', component_type: Type[T]) -> Optional['GameObject']:
+        """
+        Find the first GameObject that has a component of the specified type.
+        
+        Args:
+            scene: The scene to search in
+            component_type: Component class to search for (e.g., Collider, Rigidbody, Camera3D)
+            
+        Returns:
+            First GameObject with matching component type, or None if not found
+        """
+        for obj in scene.objects:
+            if obj.get_component(component_type) is not None:
+                return obj
+        return None
+
+    @classmethod
+    def get_all_by_type(cls, scene: 'Scene3D', component_type: Type[T]) -> List['GameObject']:
+        """
+        Find all GameObjects that have a component of the specified type.
+        
+        Args:
+            scene: The scene to search in
+            component_type: Component class to search for (e.g., Collider, Rigidbody, Camera3D)
+            
+        Returns:
+            List of all GameObjects with matching component type
+        """
+        return [obj for obj in scene.objects if obj.get_component(component_type) is not None]
+
+    @classmethod
+    def find_by_name(cls, scene: 'Scene3D', name: str) -> Optional['GameObject']:
+        """
+        Find the first GameObject with the specified name in a scene.
+        
+        Args:
+            scene: The scene to search in
+            name: Name to search for
+            
+        Returns:
+            First GameObject with matching name, or None if not found
+        """
+        for obj in scene.objects:
+            if obj.name == name:
+                return obj
+        return None
+
+    @classmethod
+    def find_all_by_name(cls, scene: 'Scene3D', name: str) -> List['GameObject']:
+        """
+        Find all GameObjects with the specified name in a scene.
+        
+        Args:
+            scene: The scene to search in
+            name: Name to search for
+            
+        Returns:
+            List of all GameObjects with matching name
+        """
+        return [obj for obj in scene.objects if obj.name == name]

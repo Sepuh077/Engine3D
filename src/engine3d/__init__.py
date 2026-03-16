@@ -24,11 +24,21 @@ Example:
 from .window import Window3D
 from .scene import Scene3D
 from .gameobject import GameObject
-from .component import Component, Script, WaitForSeconds, WaitEndOfFrame, Time, InspectorField, InspectorFieldType
+from .component import Component, Script, WaitForSeconds, WaitEndOfFrame, Time, InspectorField, InspectorFieldType, Tag
 from .transform import Transform
 from .object3d import Object3D, create_cube, create_sphere, create_plane
 from .camera import Camera3D
 from .light import Light3D, DirectionalLight3D, PointLight3D
+from .graphics.material import (
+    Material,
+    UnlitMaterial,
+    LitMaterial,
+    SpecularMaterial,
+    EmissiveMaterial,
+    TransparentMaterial,
+    SkyboxMaterial,
+    MATERIAL_FILE_EXT,
+)
 from .particle import (
     ParticleSystem,
     ParticleBurst,
@@ -87,6 +97,7 @@ __all__ = [
     'Time',
     'InspectorField',
     'InspectorFieldType',
+    'Tag',
     'Transform',
     'Rigidbody',
     'Object3D',
@@ -97,6 +108,15 @@ __all__ = [
     'Light3D',
     'DirectionalLight3D',
     'PointLight3D',
+    # Materials
+    'Material',
+    'UnlitMaterial',
+    'LitMaterial',
+    'SpecularMaterial',
+    'EmissiveMaterial',
+    'TransparentMaterial',
+    'SkyboxMaterial',
+    'MATERIAL_FILE_EXT',
     'ParticleSystem',
     'ParticleBurst',
     'linear_size_over_lifetime',
