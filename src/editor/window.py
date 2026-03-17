@@ -184,6 +184,346 @@ class FileTreeView(QtWidgets.QTreeView):
                 return
         
         super().startDrag(supported_actions)
+    
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
+        """Handle right-click context menu."""
+        menu = QtWidgets.QMenu(self)
+        
+        # Get the clicked index
+        index = self.indexAt(event.pos())
+        
+        # Determine the directory to use
+        if index.isValid():
+            path = self.editor_window._file_model.filePath(index)
+            if self.editor_window._file_model.isDir(index):
+                directory = path
+            else:
+                directory = str(Path(path).parent)
+        else:
+            # Clicked in empty area, use project root
+            directory = str(self.editor_window.project_root)
+        
+        # Add "Create" submenu
+        create_menu = menu.addMenu("Create")
+        
+        # Add folder creation
+        create_folder_action = create_menu.addAction("Folder")
+        create_folder_action.triggered.connect(lambda: self._create_folder(directory))
+        
+        create_menu.addSeparator()
+        
+        # Add Script creation
+        create_script_action = create_menu.addAction("Python Script")
+        create_script_action.triggered.connect(lambda: self._create_python_script(directory))
+        
+        create_menu.addSeparator()
+        
+        # Add ScriptableObject creation submenu
+        so_menu = create_menu.addMenu("Scriptable Object")
+        
+        # Add "New Scriptable Object Type..." option
+        new_so_type_action = so_menu.addAction("New Type...")
+        new_so_type_action.triggered.connect(lambda: self._create_new_scriptable_object_type(directory))
+        
+        so_menu.addSeparator()
+        
+        # Find all ScriptableObject types and add them to the menu
+        self._add_scriptable_object_types_to_menu(so_menu, directory)
+        
+        # Add prefab creation option if a .prefab file is selected
+        if index.isValid():
+            path = self.editor_window._file_model.filePath(index)
+            ext = Path(path).suffix.lower()
+            
+            if ext == '.prefab':
+                menu.addSeparator()
+                instantiate_action = menu.addAction("Instantiate Prefab")
+                instantiate_action.triggered.connect(lambda: self._instantiate_prefab(path))
+            
+            elif ext == '.asset':
+                menu.addSeparator()
+                edit_action = menu.addAction("Edit Scriptable Object")
+                edit_action.triggered.connect(lambda: self._edit_scriptable_object(path))
+        
+        menu.exec(event.globalPos())
+    
+    def _create_folder(self, directory: str) -> None:
+        """Create a new folder in the specified directory."""
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "New Folder", "Enter folder name:"
+        )
+        if ok and name.strip():
+            folder_path = Path(directory) / name.strip()
+            try:
+                folder_path.mkdir(parents=True, exist_ok=True)
+                # Refresh file view
+                self.editor_window._file_model.setRootPath(str(self.editor_window.project_root))
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Error", f"Failed to create folder:\n{e}")
+    
+    def _create_python_script(self, directory: str) -> None:
+        """Create a new Python script file."""
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "New Python Script", "Enter script name (without .py):"
+        )
+        if ok and name.strip():
+            script_name = name.strip()
+            if not script_name.isidentifier():
+                QtWidgets.QMessageBox.warning(
+                    self, "Invalid Name", "Script name must be a valid Python identifier."
+                )
+                return
+            
+            script_path = Path(directory) / f"{script_name}.py"
+            
+            # Create a basic script template
+            template = f'''"""
+{script_name} module.
+"""
+
+from src.engine3d import Script, Time, InspectorField
+
+
+class {script_name}Script(Script):
+    """Custom script component."""
+    
+    # Example inspector fields (uncomment to use):
+    # speed = InspectorField(float, default=5.0, min_value=0.0)
+    # enabled = InspectorField(bool, default=True)
+    
+    def start(self):
+        """Called once when the script starts."""
+        pass
+    
+    def update(self):
+        """Called every frame."""
+        pass
+'''
+            
+            try:
+                script_path.write_text(template, encoding="utf-8")
+                self.editor_window._file_model.setRootPath(str(self.editor_window.project_root))
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Error", f"Failed to create script:\n{e}")
+    
+    def _create_new_scriptable_object_type(self, directory: str) -> None:
+        """Create a new ScriptableObject type definition file."""
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "New Scriptable Object Type", "Enter type name (e.g., WeaponData, GameSettings):"
+        )
+        if ok and name.strip():
+            type_name = name.strip()
+            if not type_name.isidentifier():
+                QtWidgets.QMessageBox.warning(
+                    self, "Invalid Name", "Type name must be a valid Python identifier."
+                )
+                return
+            
+            script_path = Path(directory) / f"{type_name.lower()}.py"
+            
+            # Create a ScriptableObject template
+            template = f'''"""
+{type_name} - A Scriptable Object type.
+
+Define data that can be saved as assets and shared across your game.
+"""
+from src.engine3d import ScriptableObject, InspectorField
+
+
+class {type_name}(ScriptableObject):
+    """
+    {type_name} - Data container asset.
+    
+    Create instances from the editor: Right-click in file browser -> Create -> Scriptable Object -> {type_name}
+    """
+    
+    # Define your data fields here using InspectorField:
+    # Example fields:
+    # name = InspectorField(str, default="", tooltip="The name of this item")
+    # value = InspectorField(int, default=0, min_value=0, max_value=100)
+    # speed = InspectorField(float, default=1.0, min_value=0.0)
+    # enabled = InspectorField(bool, default=True)
+    # description = InspectorField(str, default="")
+    
+    def on_validate(self):
+        """
+        Called when values change in the inspector.
+        Override to add custom validation logic.
+        """
+        pass
+'''
+            
+            try:
+                script_path.write_text(template, encoding="utf-8")
+                self.editor_window._file_model.setRootPath(str(self.editor_window.project_root))
+                
+                # Import the module to register the type
+                import importlib.util
+                import sys
+                
+                spec = importlib.util.spec_from_file_location(
+                    f"{type_name.lower()}_scriptable",
+                    str(script_path)
+                )
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[f"{type_name.lower()}_scriptable"] = module
+                    spec.loader.exec_module(module)
+                
+                QtWidgets.QMessageBox.information(
+                    self, "Type Created",
+                    f"ScriptableObject type '{type_name}' created.\n\n"
+                    f"You can now create instances from: Create -> Scriptable Object -> {type_name}"
+                )
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(self, "Error", f"Failed to create type:\n{e}")
+    
+    def _add_scriptable_object_types_to_menu(self, menu: QtWidgets.QMenu, directory: str) -> None:
+        """Add all discovered ScriptableObject types to the menu."""
+        from src.engine3d.scriptable_object import ScriptableObject, ScriptableObjectMeta
+        
+        # Get all registered types
+        types = ScriptableObjectMeta.get_all_types()
+        
+        # Filter to show only simple names (not full module paths)
+        seen_simple_names = set()
+        for type_name, type_info in types.items():
+            # Skip full module paths (they contain dots beyond the class name)
+            if '.' in type_name:
+                continue
+            
+            if type_name in seen_simple_names:
+                continue
+            seen_simple_names.add(type_name)
+            
+            action = menu.addAction(type_name)
+            action.triggered.connect(
+                lambda checked, t=type_info.type_class, d=directory: self._create_scriptable_object_instance(t, d)
+            )
+        
+        # If no types found, add a disabled placeholder
+        if not seen_simple_names:
+            placeholder = menu.addAction("(No types defined)")
+            placeholder.setEnabled(False)
+        
+        # Also scan for ScriptableObject types in project files
+        self._scan_project_for_scriptable_objects(menu, directory)
+    
+    def _scan_project_for_scriptable_objects(self, menu: QtWidgets.QMenu, directory: str) -> None:
+        """Scan project files for ScriptableObject subclasses and add to menu."""
+        import re
+        
+        # Find all .py files in the project
+        project_root = self.editor_window.project_root
+        
+        found_types = []
+        for py_file in project_root.rglob("*.py"):
+            # Skip hidden directories and __pycache__
+            if any(part.startswith('.') or part == '__pycache__' for part in py_file.parts):
+                continue
+            
+            # Skip src directory (engine code)
+            if 'src' in py_file.parts:
+                continue
+            
+            try:
+                content = py_file.read_text(encoding='utf-8')
+                
+                # Look for ScriptableObject subclasses
+                pattern = r'class\s+(\w+)\s*\(\s*ScriptableObject\s*\)'
+                matches = re.findall(pattern, content)
+                
+                for class_name in matches:
+                    if class_name not in found_types:
+                        found_types.append((py_file, class_name))
+            except Exception:
+                continue
+        
+        # Add found types to menu
+        if found_types:
+            menu.addSeparator()
+            for file_path, class_name in found_types:
+                # Try to import and get the class
+                try:
+                    import importlib.util
+                    import sys
+                    
+                    module_name = f"so_{class_name}_{id(file_path)}"
+                    spec = importlib.util.spec_from_file_location(module_name, str(file_path))
+                    if spec and spec.loader:
+                        module = importlib.util.module_from_spec(spec)
+                        sys.modules[module_name] = module
+                        spec.loader.exec_module(module)
+                        
+                        if hasattr(module, class_name):
+                            so_class = getattr(module, class_name)
+                            action = menu.addAction(f"{class_name} (from {file_path.stem})")
+                            action.triggered.connect(
+                                lambda checked, c=so_class, d=directory: self._create_scriptable_object_instance(c, d)
+                            )
+                except Exception:
+                    # If import fails, just show the class name
+                    action = menu.addAction(f"{class_name} (needs import)")
+    
+    def _create_scriptable_object_instance(self, so_class, directory: str) -> None:
+        """Create a new ScriptableObject instance of the given class."""
+        from src.engine3d.scriptable_object import SCRIPTABLE_OBJECT_EXT
+        
+        # Ask for instance name
+        default_name = f"New{so_class.__name__}"
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, f"Create {so_class.__name__}", 
+            f"Enter name for this {so_class.__name__} instance:",
+            text=default_name
+        )
+        
+        if not ok or not name.strip():
+            return
+        
+        name = name.strip()
+        
+        # Determine save path
+        file_path = Path(directory) / f"{name}{SCRIPTABLE_OBJECT_EXT}"
+        
+        # Check if file already exists
+        if file_path.exists():
+            reply = QtWidgets.QMessageBox.question(
+                self, "File Exists",
+                f"File '{file_path}' already exists. Overwrite?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
+            )
+            if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        
+        try:
+            # Create instance
+            instance = so_class.create(name)
+            instance.save(str(file_path))
+            
+            # Refresh file view
+            self.editor_window._file_model.setRootPath(str(self.editor_window.project_root))
+            
+            # Select the new file
+            new_index = self.editor_window._file_model.index(str(file_path))
+            if new_index.isValid():
+                self.setCurrentIndex(new_index)
+            
+            QtWidgets.QMessageBox.information(
+                self, "Scriptable Object Created",
+                f"{so_class.__name__} '{name}' created at:\n{file_path}"
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to create Scriptable Object:\n{e}")
+    
+    def _instantiate_prefab(self, prefab_path: str) -> None:
+        """Instantiate a prefab from the context menu."""
+        self.editor_window._instantiate_prefab_from_file(prefab_path)
+    
+    def _edit_scriptable_object(self, asset_path: str) -> None:
+        """Open a Scriptable Object for editing in the inspector."""
+        self.editor_window._show_scriptable_object_inspector(asset_path)
 
 
 class HierarchyTreeWidget(QtWidgets.QTreeWidget):
@@ -1216,10 +1556,15 @@ class {class_name}(Script):
         # If it's a .prefab file, show the prefab inspector
         if ext == '.prefab':
             self._show_prefab_inspector(path)
+        elif ext == '.asset':
+            # Show ScriptableObject inspector
+            self._show_scriptable_object_inspector(path)
         else:
             # Clear prefab inspector if not a prefab file
             self._current_prefab_path = None
             self._current_prefab = None
+            # Clear scriptable object inspector
+            self._current_scriptable_object = None
     
     def _show_prefab_inspector(self, path: str) -> None:
         """Show the prefab inspector for a .prefab file."""
@@ -1514,6 +1859,372 @@ class {class_name}(Script):
     def _sync_prefab_data_from_ui(self) -> None:
         """Deprecated: Prefab data is now synced via temp object."""
         return
+    
+    # =========================================================================
+    # Scriptable Object Inspector
+    # =========================================================================
+    
+    def _show_scriptable_object_inspector(self, path: str) -> None:
+        """Show the inspector for a ScriptableObject asset file."""
+        from src.engine3d.scriptable_object import ScriptableObject, ScriptableObjectMeta
+        
+        try:
+            # Load the asset file
+            with open(path, "r", encoding="utf-8") as f:
+                import json
+                data = json.load(f)
+            
+            # Get the type
+            type_name = data.get("_type", "")
+            so_class = ScriptableObjectMeta.get_type(type_name)
+            
+            if so_class is None:
+                # Try to load the module that defines this type
+                # The type name should be module.ClassName
+                if '.' in type_name:
+                    module_name = type_name.rsplit('.', 1)[0]
+                    try:
+                        import importlib
+                        importlib.import_module(module_name)
+                        so_class = ScriptableObjectMeta.get_type(type_name)
+                    except ImportError:
+                        pass
+                
+                if so_class is None:
+                    QtWidgets.QMessageBox.warning(
+                        self, "Unknown Type",
+                        f"Could not find ScriptableObject type '{type_name}'.\n"
+                        f"Make sure the defining module is available."
+                    )
+                    return
+            
+            # Load the instance FIRST (before clearing anything)
+            self._current_scriptable_object = so_class.load(path)
+            self._current_scriptable_object_path = path
+            
+            # Clear any GameObject selection (set state directly to avoid _update_inspector_fields)
+            self._selection.game_object = None
+            if self._window:
+                self._window.editor_selected_object = None
+            self._components_dirty = True
+            
+            # Clear hierarchy selection
+            if hasattr(self, '_hierarchy_tree') and self._hierarchy_tree is not None:
+                self._hierarchy_tree.clearSelection()
+            
+            # Clear any previous component fields (from previous GameObject selection)
+            # Don't clear SO state since we just set it
+            self._clear_component_fields(clear_so_state=False)
+            
+            # Hide transform group (ScriptableObjects don't have transforms)
+            self._transform_group.setVisible(False)
+            
+            # Disable name/tag editing for ScriptableObjects (they have their own name)
+            self._inspector_name.setEnabled(True)
+            self._inspector_tag.setEnabled(False)
+            
+            # Update inspector
+            self._update_scriptable_object_inspector()
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load Scriptable Object:\n{e}")
+    
+    def _update_scriptable_object_inspector(self) -> None:
+        """Update the inspector panel to show the current ScriptableObject."""
+        if not hasattr(self, '_current_scriptable_object') or self._current_scriptable_object is None:
+            return
+        
+        so = self._current_scriptable_object
+        
+        # Block signals while updating
+        self._set_inspector_signals_blocked(True)
+        
+        # Set name
+        self._inspector_name.setEnabled(True)
+        self._inspector_name.setText(so.name)
+        
+        # Disable tag for ScriptableObjects (they don't have tags)
+        self._inspector_tag.setEnabled(False)
+        self._inspector_tag.setCurrentText("")
+        
+        # Hide transform group (ScriptableObjects don't have transforms)
+        self._transform_group.setVisible(False)
+        
+        # Show type info
+        type_name = so.__class__.__name__
+        self._prefab_source_label.setText(f"Scriptable Object: {type_name}")
+        self._prefab_source_label.setVisible(True)
+        
+        # Build field editors
+        self._build_scriptable_object_fields()
+        
+        self._set_inspector_signals_blocked(False)
+    
+    def _build_scriptable_object_fields(self) -> None:
+        """Build inspector field editors for the current ScriptableObject."""
+        # Don't clear SO state - it's already set by _show_scriptable_object_inspector
+        self._clear_component_fields(clear_so_state=False)
+        
+        if not hasattr(self, '_current_scriptable_object') or self._current_scriptable_object is None:
+            return
+        
+        so = self._current_scriptable_object
+        
+        # Create a group box for the fields
+        fields_group = QtWidgets.QGroupBox("Fields", self._components_container)
+        fields_layout = QtWidgets.QVBoxLayout(fields_group)
+        fields_layout.setContentsMargins(4, 4, 4, 4)
+        fields_layout.setSpacing(4)
+        
+        # Get all inspector fields
+        for field_name, field_info in so.get_inspector_fields():
+            field_widget = self._create_scriptable_object_field_widget(field_name, field_info)
+            if field_widget:
+                fields_layout.addWidget(field_widget)
+        
+        # Add save button
+        save_btn = QtWidgets.QPushButton("Save Changes")
+        save_btn.clicked.connect(self._save_scriptable_object)
+        fields_layout.addWidget(save_btn)
+        
+        self._components_layout.addWidget(fields_group)
+    
+    def _create_scriptable_object_field_widget(self, field_name: str, field_info) -> Optional[QtWidgets.QWidget]:
+        """Create an editor widget for a ScriptableObject field."""
+        from src.engine3d.component import InspectorFieldType
+        from src.types import Color as ColorType
+        
+        so = self._current_scriptable_object
+        current_value = so.get_inspector_field_value(field_name)
+        
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        label = QtWidgets.QLabel(field_name)
+        label.setMinimumWidth(80)
+        layout.addWidget(label)
+        
+        if field_info.field_type == InspectorFieldType.FLOAT:
+            spinbox = NoWheelSpinBox()
+            spinbox.setRange(
+                field_info.min_value if field_info.min_value is not None else -1e9,
+                field_info.max_value if field_info.max_value is not None else 1e9
+            )
+            spinbox.setValue(current_value if current_value is not None else 0.0)
+            spinbox.setSingleStep(field_info.step if field_info.step is not None else 0.1)
+            spinbox.setDecimals(field_info.decimals if field_info.decimals is not None else 2)
+            spinbox.valueChanged.connect(
+                lambda v, fn=field_name: self._on_scriptable_object_field_changed(fn, v)
+            )
+            layout.addWidget(spinbox)
+            
+        elif field_info.field_type == InspectorFieldType.INT:
+            spinbox = NoWheelIntSpinBox()
+            spinbox.setRange(
+                int(field_info.min_value) if field_info.min_value is not None else -2147483648,
+                int(field_info.max_value) if field_info.max_value is not None else 2147483647
+            )
+            spinbox.setValue(current_value if current_value is not None else 0)
+            spinbox.valueChanged.connect(
+                lambda v, fn=field_name: self._on_scriptable_object_field_changed(fn, v)
+            )
+            layout.addWidget(spinbox)
+            
+        elif field_info.field_type == InspectorFieldType.BOOL:
+            checkbox = QtWidgets.QCheckBox()
+            checkbox.setChecked(current_value if current_value is not None else False)
+            checkbox.stateChanged.connect(
+                lambda state, fn=field_name: self._on_scriptable_object_field_changed(
+                    fn, state == QtCore.Qt.CheckState.Checked.value
+                )
+            )
+            layout.addWidget(checkbox)
+            
+        elif field_info.field_type == InspectorFieldType.BOOL:
+            checkbox = QtWidgets.QCheckBox()
+            checkbox.setChecked(current_value if current_value is not None else False)
+            checkbox.stateChanged.connect(
+                lambda state, fn=field_name: self._on_scriptable_object_field_changed(
+                    fn, state == QtCore.Qt.CheckState.Checked.value
+                )
+            )
+            layout.addWidget(checkbox)
+            
+        elif field_info.field_type == InspectorFieldType.STRING:
+            line_edit = QtWidgets.QLineEdit()
+            line_edit.setText(current_value if current_value is not None else "")
+            line_edit.textChanged.connect(
+                lambda text, fn=field_name: self._on_scriptable_object_field_changed(fn, text)
+            )
+            layout.addWidget(line_edit)
+            
+        elif field_info.field_type == InspectorFieldType.COLOR:
+            # Color picker button
+            color_btn = QtWidgets.QPushButton()
+            if current_value:
+                r, g, b = current_value[:3]
+                color_btn.setStyleSheet(f"background-color: rgb({int(r*255)}, {int(g*255)}, {int(b*255)});")
+            else:
+                color_btn.setStyleSheet("background-color: white;")
+            
+            def pick_color():
+                current = current_value or (1.0, 1.0, 1.0)
+                initial = QtGui.QColor.fromRgbF(current[0], current[1], current[2])
+                color = QtWidgets.QColorDialog.getColor(initial, widget, f"Choose {field_name}")
+                if color.isValid():
+                    new_value = (color.redF(), color.greenF(), color.blueF())
+                    self._on_scriptable_object_field_changed(field_name, new_value)
+                    color_btn.setStyleSheet(
+                        f"background-color: rgb({color.red()}, {color.green()}, {color.blue()});"
+                    )
+            
+            color_btn.clicked.connect(pick_color)
+            layout.addWidget(color_btn)
+            
+        elif field_info.field_type == InspectorFieldType.VECTOR3:
+            # Three spinboxes for x, y, z
+            for i, axis in enumerate(['X', 'Y', 'Z']):
+                spin = NoWheelSpinBox()
+                spin.setRange(-1e9, 1e9)
+                spin.setSingleStep(0.1)
+                spin.setDecimals(2)
+                if current_value:
+                    spin.setValue(current_value[i])
+                spin.valueChanged.connect(
+                    lambda v, fn=field_name, idx=i, current=current_value:
+                    self._on_vector_field_changed(fn, idx, v, list(current or [0, 0, 0]))
+                )
+                layout.addWidget(QtWidgets.QLabel(axis))
+                layout.addWidget(spin)
+                
+        elif field_info.field_type == InspectorFieldType.LIST:
+            # List editor - show count and edit button
+            list_value = current_value if current_value else []
+            count_label = QtWidgets.QLabel(f"[{len(list_value)} items]")
+            layout.addWidget(count_label)
+            
+            edit_btn = QtWidgets.QPushButton("Edit")
+            edit_btn.clicked.connect(
+                lambda checked, fn=field_name, lv=list_value, li=field_info.list_item_type:
+                self._edit_scriptable_object_list_field(fn, lv, li)
+            )
+            layout.addWidget(edit_btn)
+            
+        else:
+            # Generic - show as string
+            line_edit = QtWidgets.QLineEdit()
+            line_edit.setText(str(current_value) if current_value is not None else "")
+            line_edit.setReadOnly(True)
+            layout.addWidget(line_edit)
+        
+        layout.addStretch()
+        return widget
+    
+    def _on_scriptable_object_field_changed(self, field_name: str, value: Any) -> None:
+        """Handle when a ScriptableObject field value changes."""
+        if not hasattr(self, '_current_scriptable_object') or self._current_scriptable_object is None:
+            return
+        
+        self._current_scriptable_object.set_inspector_field_value(field_name, value)
+        
+        # Auto-save to file so changes are reflected in play mode
+        if hasattr(self, '_current_scriptable_object_path') and self._current_scriptable_object_path:
+            try:
+                self._current_scriptable_object.save(self._current_scriptable_object_path)
+            except Exception:
+                # Silently ignore save errors during auto-save
+                pass
+        
+        # Also update the registry so references use the updated instance
+        from src.engine3d.scriptable_object import ScriptableObject
+        ScriptableObject.register_instance(self._current_scriptable_object)
+    
+    def _on_vector_field_changed(self, field_name: str, index: int, value: float, current: list) -> None:
+        """Handle when a Vector3 field component changes."""
+        current[index] = value
+        self._on_scriptable_object_field_changed(field_name, tuple(current))
+    
+    def _edit_scriptable_object_list_field(self, field_name: str, current_value: list, item_type) -> None:
+        """Open a dialog to edit a list field."""
+        from src.engine3d.component import InspectorFieldType
+        
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(f"Edit {field_name}")
+        dialog.setMinimumSize(400, 300)
+        
+        layout = QtWidgets.QVBoxLayout(dialog)
+        
+        # List widget
+        list_widget = QtWidgets.QListWidget()
+        for item in current_value:
+            list_widget.addItem(str(item))
+        layout.addWidget(list_widget)
+        
+        # Buttons
+        btn_layout = QtWidgets.QHBoxLayout()
+        
+        def add_item():
+            if item_type == int or item_type == InspectorFieldType.INT:
+                value, ok = QtWidgets.QInputDialog.getInt(dialog, "Add Item", "Value:")
+            elif item_type == float or item_type == InspectorFieldType.FLOAT:
+                value, ok = QtWidgets.QInputDialog.getDouble(dialog, "Add Item", "Value:")
+            else:
+                value, ok = QtWidgets.QInputDialog.getText(dialog, "Add Item", "Value:")
+            
+            if ok:
+                current_value.append(value)
+                list_widget.addItem(str(value))
+        
+        def remove_item():
+            idx = list_widget.currentRow()
+            if idx >= 0:
+                current_value.pop(idx)
+                list_widget.takeItem(idx)
+        
+        add_btn = QtWidgets.QPushButton("Add")
+        add_btn.clicked.connect(add_item)
+        remove_btn = QtWidgets.QPushButton("Remove")
+        remove_btn.clicked.connect(remove_item)
+        btn_layout.addWidget(add_btn)
+        btn_layout.addWidget(remove_btn)
+        btn_layout.addStretch()
+        
+        ok_btn = QtWidgets.QPushButton("OK")
+        ok_btn.clicked.connect(dialog.accept)
+        btn_layout.addWidget(ok_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self._on_scriptable_object_field_changed(field_name, current_value)
+    
+    def _save_scriptable_object(self) -> None:
+        """Save the current ScriptableObject to its file."""
+        if not hasattr(self, '_current_scriptable_object') or self._current_scriptable_object is None:
+            return
+        
+        if not hasattr(self, '_current_scriptable_object_path') or self._current_scriptable_object_path is None:
+            # Ask for save location
+            file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Save Scriptable Object",
+                str(self.project_root / f"{self._current_scriptable_object.name}.asset"),
+                "Asset Files (*.asset)"
+            )
+            if not file_path:
+                return
+            self._current_scriptable_object_path = file_path
+        
+        try:
+            self._current_scriptable_object.save(self._current_scriptable_object_path)
+            QtWidgets.QMessageBox.information(
+                self, "Saved",
+                f"Scriptable Object saved to:\n{self._current_scriptable_object_path}"
+            )
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save:\n{e}")
 
     def _on_play_clicked(self) -> None:
         """Run the current scene as a game in the viewport."""
@@ -1523,6 +2234,18 @@ class {class_name}(Script):
         try:
             # Store original scene state
             self._original_scene_data = self._scene._to_scene_dict()
+            
+            # Save any open ScriptableObject changes before play
+            if hasattr(self, '_current_scriptable_object') and self._current_scriptable_object is not None:
+                if hasattr(self, '_current_scriptable_object_path') and self._current_scriptable_object_path:
+                    try:
+                        self._current_scriptable_object.save(self._current_scriptable_object_path)
+                    except Exception:
+                        pass
+            
+            # Reload ScriptableObject assets to ensure fresh state
+            from src.engine3d.scriptable_object import ScriptableObject
+            ScriptableObject.load_all_assets(str(self.project_root))
             
             # Switch to game camera
             if self._window:
@@ -1633,11 +2356,28 @@ class {class_name}(Script):
     def _mark_components_dirty(self) -> None:
         self._components_dirty = True
 
-    def _clear_component_fields(self) -> None:
+    def _clear_component_fields(self, clear_so_state: bool = True) -> None:
         for widget in self._component_fields:
             widget.setParent(None)
             widget.deleteLater()
         self._component_fields.clear()
+        
+        # Clear any remaining widgets from _components_layout that aren't tracked
+        # (ScriptableObject fields are added directly to the layout)
+        while self._components_layout.count() > 0:
+            item = self._components_layout.takeAt(0)
+            widget = item.widget() if item else None
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        
+        # Optionally clear ScriptableObject inspector state
+        # (set to False when called from _build_scriptable_object_fields to preserve state)
+        if clear_so_state:
+            if hasattr(self, '_current_scriptable_object'):
+                self._current_scriptable_object = None
+            if hasattr(self, '_current_scriptable_object_path'):
+                self._current_scriptable_object_path = None
 
     def _apply_spinbox(self, spinbox: QtWidgets.QDoubleSpinBox, value: float) -> None:
         if not spinbox.hasFocus():
@@ -1725,6 +2465,9 @@ class {class_name}(Script):
         # Initialize scene management
         self._init_scene_file()
         
+        # Initialize ScriptableObject assets
+        self._init_scriptable_objects()
+        
         self._window.show_scene(self._scene)
 
         self._viewport.resized.connect(self._on_viewport_resized)
@@ -1740,6 +2483,17 @@ class {class_name}(Script):
 
         self._viewport.render_callback = self._render_frame
         self._timer.start()
+    
+    def _init_scriptable_objects(self) -> None:
+        """Load all ScriptableObject assets from the project directory."""
+        from src.engine3d.scriptable_object import ScriptableObject
+        
+        try:
+            loaded = ScriptableObject.load_all_assets(str(self.project_root))
+            if loaded:
+                print(f"Loaded {len(loaded)} ScriptableObject assets")
+        except Exception as e:
+            print(f"Warning: Failed to load ScriptableObject assets: {e}")
 
     def _init_scene_file(self) -> None:
         """Initialize the Scenes folder and main scene file."""
@@ -2453,12 +3207,25 @@ class {class_name}(Script):
     def _update_inspector_fields(self, force_components: bool = False) -> None:
         obj = self._selection.game_object
         
+        # Clear any ScriptableObject inspector state when showing GameObject
+        # Only clear if we're actually showing a GameObject (obj is not None)
+        if obj is not None:
+            if hasattr(self, '_current_scriptable_object'):
+                self._current_scriptable_object = None
+            if hasattr(self, '_current_scriptable_object_path'):
+                self._current_scriptable_object_path = None
+        
         # Check if we're in prefab mode (viewing a prefab file)
         if not obj and hasattr(self, '_current_prefab') and self._current_prefab is not None:
             # Keep the prefab inspector open, don't clear it
             return
         
         if not obj:
+            # If we have a current ScriptableObject, don't clear the inspector
+            if hasattr(self, '_current_scriptable_object') and self._current_scriptable_object is not None:
+                self._components_dirty = True
+                return
+            
             self._inspector_name.setText("")
             self._inspector_tag.blockSignals(True)
             self._inspector_tag.clear()
@@ -2669,6 +3436,8 @@ class {class_name}(Script):
             return self._create_gameobject_ref_field(comp, field_name, field_info, current_value)
         elif field_info.field_type == InspectorFieldType.MATERIAL_REF:
             return self._create_material_ref_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.SCRIPTABLE_OBJECT_REF:
+            return self._create_scriptable_object_ref_field(comp, field_name, field_info, current_value)
         else:
             # Fallback: just show a label
             label = QtWidgets.QLabel(str(current_value))
@@ -3147,6 +3916,107 @@ class {class_name}(Script):
         layout.addWidget(text_field)
         layout.addWidget(browse_btn)
         layout.addWidget(clear_btn)
+        
+        return container
+    
+    def _create_scriptable_object_ref_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QWidget:
+        """
+        Create a combo box for selecting a ScriptableObject instance.
+        
+        Shows all saved instances of the specified ScriptableObject type that are
+        available in the project directory.
+        """
+        from src.engine3d.scriptable_object import ScriptableObject, SCRIPTABLE_OBJECT_EXT
+        
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        
+        # Get the ScriptableObject type from the field info
+        descriptor = getattr(type(comp), field_name, None)
+        so_type = descriptor.scriptable_object_type if descriptor else None
+        
+        # Create combo box
+        combo = QtWidgets.QComboBox()
+        combo.setMinimumWidth(150)
+        
+        # Add "None" option
+        combo.addItem("(None)", None)
+        
+        # Find all instances of this type
+        instances = []
+        if so_type:
+            # Get all instances from the registry
+            instances = ScriptableObject.get_by_type(so_type)
+        
+        # Sort by name
+        instances.sort(key=lambda x: x.name)
+        
+        # Add instances to combo
+        current_index = 0  # Default to "(None)"
+        for i, instance in enumerate(instances):
+            # Display name includes source path if available
+            display_name = instance.name
+            if instance.source_path:
+                display_name = f"{instance.name} ({Path(instance.source_path).stem})"
+            combo.addItem(display_name, instance)
+            
+            # Check if this is the current value
+            if current_value is not None and instance is current_value:
+                current_index = i + 1  # +1 because of "(None)" option
+            elif current_value is not None and hasattr(current_value, 'name') and instance.name == current_value.name:
+                current_index = i + 1
+        
+        combo.setCurrentIndex(current_index)
+        
+        # Refresh button to reload assets
+        refresh_btn = QtWidgets.QPushButton("⟳")
+        refresh_btn.setFixedWidth(25)
+        refresh_btn.setToolTip("Reload ScriptableObject assets from project")
+        
+        def on_refresh():
+            """Reload all ScriptableObject assets and refresh the combo box."""
+            # Reload assets
+            ScriptableObject.load_all_assets(str(self.project_root))
+            
+            # Get updated instances
+            new_instances = ScriptableObject.get_by_type(so_type) if so_type else []
+            new_instances.sort(key=lambda x: x.name)
+            
+            # Remember current selection
+            current_data = combo.currentData()
+            
+            # Clear and repopulate
+            combo.clear()
+            combo.addItem("(None)", None)
+            
+            new_index = 0
+            for i, instance in enumerate(new_instances):
+                display_name = instance.name
+                if instance.source_path:
+                    display_name = f"{instance.name} ({Path(instance.source_path).stem})"
+                combo.addItem(display_name, instance)
+                
+                if current_data is instance:
+                    new_index = i + 1
+            
+            combo.setCurrentIndex(new_index)
+        
+        def on_selection_changed(index: int):
+            """Handle when selection changes."""
+            selected = combo.itemData(index)
+            comp.set_inspector_field_value(field_name, selected)
+            self._mark_scene_dirty()
+        
+        refresh_btn.clicked.connect(on_refresh)
+        combo.currentIndexChanged.connect(on_selection_changed)
+        
+        layout.addWidget(combo, 1)
+        layout.addWidget(refresh_btn)
+        
+        if field_info.tooltip:
+            combo.setToolTip(field_info.tooltip)
         
         return container
 

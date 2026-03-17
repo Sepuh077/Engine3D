@@ -117,6 +117,7 @@ class InspectorFieldType(Enum):
     COMPONENT_REF = "component_ref"
     GAMEOBJECT_REF = "gameobject_ref"
     MATERIAL_REF = "material_ref"
+    SCRIPTABLE_OBJECT_REF = "scriptable_object_ref"
 
 
 @dataclass
@@ -135,6 +136,7 @@ class InspectorFieldInfo:
         enum_options: List of (value, label) tuples for enum types
         tooltip: Optional tooltip text
         list_item_type: The type of items in a list field (for LIST type)
+        scriptable_object_type: The ScriptableObject subclass type (for SCRIPTABLE_OBJECT_REF type)
     """
     name: str
     field_type: InspectorFieldType
@@ -146,6 +148,7 @@ class InspectorFieldInfo:
     enum_options: Optional[List[Tuple[Any, str]]] = None
     tooltip: Optional[str] = None
     list_item_type: Optional[Union[type, InspectorFieldType]] = None
+    scriptable_object_type: Optional[type] = None
 
 
 class InspectorField(Generic[_T]):
@@ -260,7 +263,17 @@ class InspectorField(Generic[_T]):
                 # Store the original component type for reference
                 self._original_field_type = field_type
             else:
-                raise ValueError(f"Unsupported field type: {field_type}")
+                # Check if it's a ScriptableObject subclass
+                # Use string comparison to avoid circular import
+                try:
+                    from .scriptable_object import ScriptableObject
+                    if issubclass(field_type, ScriptableObject):
+                        self.field_type = InspectorFieldType.SCRIPTABLE_OBJECT_REF
+                        self._original_field_type = field_type
+                    else:
+                        raise ValueError(f"Unsupported field type: {field_type}")
+                except ImportError:
+                    raise ValueError(f"Unsupported field type: {field_type}")
         elif isinstance(field_type, str):
             # String type name for deferred/lazy resolution (e.g., "SkyboxMaterial")
             # Store for editor to resolve later
@@ -317,6 +330,8 @@ class InspectorField(Generic[_T]):
             return None  # No GameObject reference by default
         elif self.field_type == InspectorFieldType.MATERIAL_REF:
             return None  # No material reference by default
+        elif self.field_type == InspectorFieldType.SCRIPTABLE_OBJECT_REF:
+            return None  # No ScriptableObject reference by default
         return None
     
     def __set_name__(self, owner: type, name: str):
@@ -357,12 +372,20 @@ class InspectorField(Generic[_T]):
             enum_options=self.enum_options,
             tooltip=self.tooltip,
             list_item_type=self.list_item_type,
+            scriptable_object_type=self._original_field_type if self.field_type == InspectorFieldType.SCRIPTABLE_OBJECT_REF else None,
         )
     
     @property
     def component_type(self) -> Optional[type]:
         """Get the component type for COMPONENT_REF fields."""
         return self._original_field_type
+    
+    @property
+    def scriptable_object_type(self) -> Optional[type]:
+        """Get the ScriptableObject type for SCRIPTABLE_OBJECT_REF fields."""
+        if self.field_type == InspectorFieldType.SCRIPTABLE_OBJECT_REF:
+            return self._original_field_type
+        return None
 
 
 def inspector_field(

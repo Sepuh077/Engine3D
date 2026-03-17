@@ -427,6 +427,19 @@ class GameObject:
                 "class": value.__class__.__name__,
                 "state": state,
             }
+        
+        # Handle ScriptableObject references
+        try:
+            from src.engine3d.scriptable_object import ScriptableObject
+        except ImportError:
+            ScriptableObject = None
+        if ScriptableObject is not None and isinstance(value, ScriptableObject):
+            return {
+                "__type__": "ScriptableObject",
+                "so_type": f"{value.__class__.__module__}.{value.__class__.__name__}",
+                "so_name": value.name,
+                "so_path": value.source_path,
+            }
 
         if isinstance(value, dict):
             return {key: GameObject._serialize_value(val, source_go_id, source_comp_idx) for key, val in value.items()}
@@ -497,6 +510,41 @@ class GameObject:
                 restored_state = GameObject._deserialize_value(state, go_registry)
                 mat.__dict__.update(restored_state)
                 return mat
+            
+            # Handle ScriptableObject references
+            if value.get("__type__") == "ScriptableObject":
+                from src.engine3d.scriptable_object import ScriptableObject, ScriptableObjectMeta
+                so_name = value.get("so_name")
+                so_path = value.get("so_path")
+                so_type = value.get("so_type")
+                
+                # First try to get from registry by name
+                if so_name:
+                    instance = ScriptableObject.get(so_name)
+                    if instance:
+                        return instance
+                
+                # Try to load from file path
+                if so_path:
+                    try:
+                        import os
+                        if os.path.exists(so_path):
+                            instance = ScriptableObject.load(so_path)
+                            return instance
+                    except Exception:
+                        pass
+                
+                # Try to find by type and name
+                if so_type:
+                    so_class = ScriptableObjectMeta.get_type(so_type)
+                    if so_class:
+                        instances = ScriptableObject.get_by_type(so_class)
+                        for inst in instances:
+                            if inst.name == so_name:
+                                return inst
+                
+                return None  # Could not resolve
+            
             if value.get("__type__") == "bytes":
                 return bytes(value.get("value", []))
             if value.get("__type__") == "repr":

@@ -444,6 +444,61 @@ class Window3D:
         # Register as active window for global draw funcs (Arcade-style)
         from . import drawing
         drawing.set_window(self)
+        
+        # Load all ScriptableObject assets from the project directory
+        self._load_scriptable_objects()
+
+    def _load_scriptable_objects(self) -> None:
+        """
+        Load all ScriptableObject assets from the project directory.
+        
+        This ensures all ScriptableObject instances are available via
+        ScriptableObject.get() when the game starts.
+        """
+        try:
+            import os
+            from .scriptable_object import ScriptableObject
+            
+            # Try to find the project root
+            # First check if there's a common project structure
+            cwd = os.getcwd()
+            
+            # Try common locations for project root
+            project_roots = [
+                cwd,
+                os.path.dirname(cwd) if os.path.isdir(cwd) else None,
+            ]
+            
+            # Add parent directories that might be project root
+            current = cwd
+            for _ in range(3):  # Check up to 3 levels up
+                if current and os.path.isdir(current):
+                    project_roots.append(current)
+                    current = os.path.dirname(current)
+            
+            # Also check if running from examples directory
+            if 'examples' in cwd:
+                parent = os.path.dirname(cwd)
+                if parent and os.path.isdir(parent):
+                    project_roots.append(parent)
+            
+            # Try to load assets from each potential project root
+            for project_root in project_roots:
+                if project_root and os.path.isdir(project_root):
+                    # Check if there are any .asset files
+                    for root, dirs, files in os.walk(project_root):
+                        if any(f.endswith('.asset') for f in files):
+                            loaded = ScriptableObject.load_all_assets(project_root)
+                            if loaded:
+                                print(f"Loaded {len(loaded)} ScriptableObject assets from {project_root}")
+                            break  # Only load from the first project root with assets
+                    else:
+                        continue
+                    break
+                    
+        except Exception as e:
+            # Silently ignore errors during loading - assets might not exist
+            pass
 
     @property
     def light(self) -> Optional[DirectionalLight3D]:

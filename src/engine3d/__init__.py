@@ -50,6 +50,14 @@ from .particle import (
     BoxShape,
 )
 
+# Scriptable Objects
+from .scriptable_object import (
+    ScriptableObject,
+    ScriptableObjectTypeInfo,
+    ScriptableObjectMeta,
+    SCRIPTABLE_OBJECT_EXT,
+)
+
 # Lazy import Rigidbody to avoid circular dependency
 def __getattr__(name):
     if name == "Rigidbody":
@@ -126,6 +134,11 @@ __all__ = [
     'SphereShape',
     'ConeShape',
     'BoxShape',
+    # Scriptable Objects
+    'ScriptableObject',
+    'ScriptableObjectTypeInfo',
+    'ScriptableObjectMeta',
+    'SCRIPTABLE_OBJECT_EXT',
     # UI System
     'UILayer',
     'UIElement',
