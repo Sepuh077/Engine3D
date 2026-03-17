@@ -144,7 +144,7 @@ class CollisionGroupsScene(Scene3D):
         delta_time = Time.delta_time
         # Player movement with WASD + arrows for Y
         dx = dy = dz = 0.0
-        speed = self.player.move_speed * delta_time
+        speed = self.player.move_speed
         keys = pygame.key.get_pressed()
         if keys[pygame.K_a] or keys[pygame.K_LEFT]:
             dx -= speed
@@ -154,13 +154,9 @@ class CollisionGroupsScene(Scene3D):
             dz -= speed
         if keys[pygame.K_s] or keys[pygame.K_DOWN]:
             dz += speed
-        if keys[pygame.K_SPACE]:
-            dy += speed
-        if keys[pygame.K_LSHIFT]:
-            dy -= speed
         
-        if dx or dy or dz:
-            self.window.move_object(self.player, (dx, dy, dz))
+        self.player.get_component(Rigidbody).velocity[0] = dx
+        self.player.get_component(Rigidbody).velocity[2] = dz
         
         # Count active collisions for display (from collider)
         pcoll = self.player.get_component(Collider)
