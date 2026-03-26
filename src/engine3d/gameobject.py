@@ -318,6 +318,18 @@ class GameObject:
                 "_transform_dirty",
             })
 
+        is_particle_system = module_name == "src.engine3d.particle" and class_name == "ParticleSystem"
+        if is_particle_system:
+            skip_keys = set(skip_keys)
+            skip_keys.update({
+                "_particles",
+                "_container",
+                "_playing",
+                "_elapsed",
+                "_emit_timer",
+                "_rng",
+            })
+
         # Get the game object ID for component references
         game_object_id = component.game_object._id if component.game_object else None
 
@@ -460,6 +472,44 @@ class GameObject:
                 "__type__": "bytes",
                 "value": list(value),
             }
+        
+        # Handle ParticleBurst dataclass
+        try:
+            from src.engine3d.particle import ParticleBurst
+        except ImportError:
+            ParticleBurst = None
+        if ParticleBurst is not None and isinstance(value, ParticleBurst):
+            return {
+                "__type__": "ParticleBurst",
+                "interval": value.interval,
+                "count": value.count,
+                "randomize": value.randomize,
+            }
+        
+        # Handle ParticleShape subclasses
+        try:
+            from src.engine3d.particle import ParticleShape, SphereShape, ConeShape, BoxShape
+        except ImportError:
+            ParticleShape = SphereShape = ConeShape = BoxShape = None
+        if ParticleShape is not None and isinstance(value, ParticleShape):
+            if isinstance(value, SphereShape):
+                return {"__type__": "SphereShape"}
+            elif isinstance(value, ConeShape):
+                angle_deg = value.angle_rad * 180.0 / 3.14159265359 if hasattr(value, 'angle_rad') else 25.0
+                return {
+                    "__type__": "ConeShape",
+                    "angle_degrees": angle_deg,
+                    "direction": tuple(value.direction) if hasattr(value, 'direction') else (0.0, 1.0, 0.0),
+                }
+            elif isinstance(value, BoxShape):
+                return {
+                    "__type__": "BoxShape",
+                    "size": tuple(value.size) if hasattr(value, 'size') else (1.0, 1.0, 1.0),
+                    "direction": tuple(value.direction) if hasattr(value, 'direction') else (0.0, 1.0, 0.0),
+                }
+            else:
+                return {"__type__": "SphereShape"}  # Default fallback
+        
         if not isinstance(value, (str, int, float, bool)) and value is not None:
             return {
                 "__type__": "repr",
@@ -547,6 +597,28 @@ class GameObject:
             
             if value.get("__type__") == "bytes":
                 return bytes(value.get("value", []))
+            if value.get("__type__") == "ParticleBurst":
+                from src.engine3d.particle import ParticleBurst
+                return ParticleBurst(
+                    interval=value.get("interval", 1.0),
+                    count=value.get("count", 10),
+                    randomize=value.get("randomize", False),
+                )
+            if value.get("__type__") == "SphereShape":
+                from src.engine3d.particle import SphereShape
+                return SphereShape()
+            if value.get("__type__") == "ConeShape":
+                from src.engine3d.particle import ConeShape
+                return ConeShape(
+                    angle_degrees=value.get("angle_degrees", 25.0),
+                    direction=value.get("direction", (0.0, 1.0, 0.0)),
+                )
+            if value.get("__type__") == "BoxShape":
+                from src.engine3d.particle import BoxShape
+                return BoxShape(
+                    size=value.get("size", (1.0, 1.0, 1.0)),
+                    direction=value.get("direction", (0.0, 1.0, 0.0)),
+                )
             if value.get("__type__") == "repr":
                 return value.get("value")
             return {key: GameObject._deserialize_value(val, go_registry) for key, val in value.items()}

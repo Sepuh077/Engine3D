@@ -246,7 +246,7 @@ class FileIconView(QtWidgets.QListView):
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
-        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setMovement(QtWidgets.QListView.Movement.Static)
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragDrop)
         
@@ -254,7 +254,8 @@ class FileIconView(QtWidgets.QListView):
         self.setUniformItemSizes(True)
         
         # Context menu
-        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.DefaultContextMenu)
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
         
         # Double click to navigate or open
         self.doubleClicked.connect(self._on_double_clicked)
@@ -494,12 +495,15 @@ class FileIconView(QtWidgets.QListView):
         
         super().startDrag(supported_actions)
     
-    def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
+    def _show_context_menu(self, pos: QtCore.QPoint) -> None:
         """Handle right-click context menu - works on empty space too."""
         menu = QtWidgets.QMenu(self)
         
         # Get the clicked index (may be invalid if clicked on empty space)
-        index = self.indexAt(event.pos())
+        index = self.indexAt(pos)
+        
+        # Get selected indexes
+        selected_indexes = self.selectedIndexes()
         
         # Determine the directory to use for creation operations
         if index.isValid():
@@ -543,6 +547,29 @@ class FileIconView(QtWidgets.QListView):
         
         self._add_scriptable_object_types_to_menu(so_menu, directory)
         
+        menu.addSeparator()
+        
+        # Copy, Cut, Paste, Delete for files
+        has_selection = len(selected_indexes) > 0
+        
+        copy_action = menu.addAction("Copy")
+        copy_action.setEnabled(has_selection)
+        copy_action.triggered.connect(lambda: self._copy_selected_files())
+        
+        cut_action = menu.addAction("Cut")
+        cut_action.setEnabled(has_selection)
+        cut_action.triggered.connect(lambda: self._cut_selected_files())
+        
+        paste_action = menu.addAction("Paste")
+        paste_action.setEnabled(self.editor_window._clipboard_has_files())
+        paste_action.triggered.connect(lambda: self._paste_files(directory))
+        
+        menu.addSeparator()
+        
+        delete_action = menu.addAction("Delete")
+        delete_action.setEnabled(has_selection)
+        delete_action.triggered.connect(lambda: self._delete_selected_files())
+        
         # Add file-specific options if clicked on a file
         if index.isValid():
             path = self.model().filePath(index)
@@ -564,7 +591,164 @@ class FileIconView(QtWidgets.QListView):
                 open_scene_action.triggered.connect(lambda: self._load_scene_with_check(Path(path)))
         
         # Show the menu at the global position
-        menu.exec(event.globalPos())
+        menu.exec(self.viewport().mapToGlobal(pos))
+    
+    def _copy_selected_files(self) -> None:
+        """Copy selected files to clipboard."""
+        indexes = self.selectedIndexes()
+        if not indexes:
+            return
+        
+        self.editor_window._clipboard_files = []
+        for index in indexes:
+            path = self.model().filePath(index)
+            self.editor_window._clipboard_files.append(path)
+        
+        self.editor_window._clipboard_files_cut = False
+        print(f"Copied {len(self.editor_window._clipboard_files)} file(s)")
+    
+    def _cut_selected_files(self) -> None:
+        """Cut selected files to clipboard."""
+        indexes = self.selectedIndexes()
+        if not indexes:
+            return
+        
+        self.editor_window._clipboard_files = []
+        for index in indexes:
+            path = self.model().filePath(index)
+            self.editor_window._clipboard_files.append(path)
+        
+        self.editor_window._clipboard_files_cut = True
+        print(f"Cut {len(self.editor_window._clipboard_files)} file(s)")
+    
+    def _paste_files(self, directory: str) -> None:
+        """Paste files from clipboard to directory.
+        
+        If a file with the same name exists, rename with (copy) or (copy N) like Unity.
+        """
+        if not self.editor_window._clipboard_files:
+            return
+        
+        try:
+            import shutil
+            
+            for src_path in self.editor_window._clipboard_files:
+                src = Path(src_path)
+                # Generate unique destination name
+                dst = self._get_unique_copy_path(Path(directory), src.name)
+                
+                if self.editor_window._clipboard_files_cut:
+                    shutil.move(str(src), str(dst))
+                else:
+                    if src.is_dir():
+                        shutil.copytree(str(src), str(dst))
+                    else:
+                        shutil.copy2(str(src), str(dst))
+            
+            # If cut, clear clipboard
+            if self.editor_window._clipboard_files_cut:
+                self.editor_window._clipboard_files = []
+                self.editor_window._clipboard_files_cut = False
+            
+            # Refresh view
+            self.model().setRootPath(str(self.editor_window.project_root))
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to paste files:\n{e}")
+    
+    def _get_unique_copy_path(self, directory: Path, filename: str) -> Path:
+        """Generate a unique copy path for a file, like Unity does.
+        
+        Examples:
+            - "File.txt" → "File (copy).txt" (if "File.txt" exists)
+            - "File (copy).txt" → "File (copy 2).txt" (if "File (copy).txt" exists)
+            - "File.txt" → "File (copy).txt" (if "File.txt" exists but "File (copy).txt" doesn't)
+        """
+        base_path = directory / filename
+        
+        # If file doesn't exist, use original name
+        if not base_path.exists():
+            return base_path
+        
+        # Split filename into stem and suffix
+        stem = Path(filename).stem
+        suffix = Path(filename).suffix
+        
+        # Check if the name already has a (copy) or (copy N) pattern
+        import re
+        copy_pattern = re.compile(r'^(.+?)\s*\(\s*copy\s*(\d*)\s*\)$', re.IGNORECASE)
+        match = copy_pattern.match(stem)
+        
+        if match:
+            base_name = match.group(1).rstrip()
+            num_str = match.group(2)
+            if num_str:
+                next_num = int(num_str) + 1
+            else:
+                next_num = 2
+            new_stem = f"{base_name} (copy {next_num})"
+        else:
+            # First copy
+            new_stem = f"{stem} (copy)"
+        
+        # Check if this name exists, if so increment
+        new_name = f"{new_stem}{suffix}"
+        new_path = directory / new_name
+        
+        # Keep incrementing until we find a free name
+        counter = 2
+        while new_path.exists():
+            if match and match.group(2):
+                # Already had a number, increment it
+                base_name = match.group(1).rstrip()
+                new_stem = f"{base_name} (copy {counter})"
+            else:
+                # First was (copy), now (copy 2), (copy 3), etc.
+                new_stem = f"{stem} (copy {counter})"
+            new_name = f"{new_stem}{suffix}"
+            new_path = directory / new_name
+            counter += 1
+        
+        return new_path
+    
+    def _delete_selected_files(self) -> None:
+        """Delete selected files."""
+        indexes = self.selectedIndexes()
+        if not indexes:
+            return
+        
+        paths = []
+        for index in indexes:
+            paths.append(self.model().filePath(index))
+        
+        # Confirm deletion
+        if len(paths) == 1:
+            msg = f"Delete '{Path(paths[0]).name}'?"
+        else:
+            msg = f"Delete {len(paths)} items?"
+        
+        reply = QtWidgets.QMessageBox.question(
+            self, "Delete",
+            msg,
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            import shutil
+            for path in paths:
+                p = Path(path)
+                if p.is_dir():
+                    shutil.rmtree(str(p))
+                else:
+                    p.unlink()
+            
+            # Refresh view
+            self.model().setRootPath(str(self.editor_window.project_root))
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to delete files:\n{e}")
     
     def _create_folder(self, directory: str) -> None:
         """Create a new folder in the specified directory."""
@@ -887,10 +1071,13 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
         self._dragged_item = None
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
-        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        # Use DragDrop mode so we can handle reparenting ourselves via object_parented signal
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragDrop)
         self.setDropIndicatorShown(True)
-        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
     
     def startDrag(self, supported_actions) -> None:
         self._dragged_item = self.currentItem()
@@ -921,23 +1108,27 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
         super().startDrag(supported_actions)
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
-        """Accept drops from file view (prefabs)."""
+        """Accept drops from file view (prefabs) and internal gameobject drags."""
         if event.mimeData().hasText():
             text = event.mimeData().text()
             if text.startswith("prefab:"):
                 event.acceptProposedAction()
                 return
             elif text.startswith("gameobject:"):
-                # Internal move - let parent handle
-                super().dragEnterEvent(event)
+                # Internal move - accept for reparenting
+                event.acceptProposedAction()
                 return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event: QtGui.QDragMoveEvent) -> None:
-        """Handle drag move for prefabs."""
+        """Handle drag move for prefabs and internal gameobject drags."""
         if event.mimeData().hasText():
             text = event.mimeData().text()
             if text.startswith("prefab:"):
+                event.acceptProposedAction()
+                return
+            elif text.startswith("gameobject:"):
+                # Internal move - accept for reparenting
                 event.acceptProposedAction()
                 return
         super().dragMoveEvent(event)
@@ -956,6 +1147,7 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
         # Get the item being dragged
         dragged_item = self._dragged_item or self.currentItem()
         if not dragged_item:
+            event.ignore()
             return
         
         # Get the drop target
@@ -972,10 +1164,12 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
                 drop_obj = obj
         
         if not dragged_obj:
+            event.ignore()
             return
         
         # Check for circular parenting (can't drop parent onto its child)
         if drop_obj and self._is_descendant(dragged_obj, drop_obj):
+            event.ignore()
             return  # Invalid drop
 
         # Allow dropping onto viewport or empty area to unparent
@@ -986,8 +1180,9 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
         # If drop_obj is None, it means dropping at root level
         self.object_parented.emit(dragged_obj, drop_obj)
         
-        # Accept the event
-        event.acceptProposedAction()
+        # Accept the event and ignore default Qt behavior
+        # We handle reparenting ourselves via _on_object_parented -> _refresh_hierarchy
+        event.accept()
         self._dragged_item = None
     
     def _instantiate_prefab(self, prefab_path: str, event: QtGui.QDropEvent) -> None:
@@ -1046,6 +1241,65 @@ class HierarchyTreeWidget(QtWidgets.QTreeWidget):
             current = current.parent
         return False
 
+    def _show_context_menu(self, pos: QtCore.QPoint) -> None:
+        """Show context menu for hierarchy items."""
+        menu = QtWidgets.QMenu(self)
+        
+        # Get selected items
+        selected_items = self.selectedItems()
+        selected_objects = []
+        for item in selected_items:
+            for obj, it in self.editor_window._object_items.items():
+                if it is item:
+                    selected_objects.append(obj)
+                    break
+        
+        has_selection = len(selected_objects) > 0
+        has_single_selection = len(selected_objects) == 1
+        
+        # Create submenu
+        create_menu = menu.addMenu("Create")
+        
+        empty_action = create_menu.addAction("Empty GameObject")
+        empty_action.triggered.connect(lambda: self.editor_window._create_gameobject("Empty"))
+        
+        create_menu.addSeparator()
+        
+        cube_action = create_menu.addAction("Cube")
+        cube_action.triggered.connect(lambda: self.editor_window._create_gameobject("Cube"))
+        
+        sphere_action = create_menu.addAction("Sphere")
+        sphere_action.triggered.connect(lambda: self.editor_window._create_gameobject("Sphere"))
+        
+        plane_action = create_menu.addAction("Plane")
+        plane_action.triggered.connect(lambda: self.editor_window._create_gameobject("Plane"))
+        
+        camera_action = create_menu.addAction("Camera")
+        camera_action.triggered.connect(lambda: self.editor_window._create_gameobject("Camera"))
+        
+        menu.addSeparator()
+        
+        # Copy, Cut, Paste, Delete
+        copy_action = menu.addAction("Copy")
+        copy_action.setEnabled(has_selection)
+        copy_action.triggered.connect(lambda: self.editor_window._copy_selected_objects())
+        
+        cut_action = menu.addAction("Cut")
+        cut_action.setEnabled(has_selection)
+        cut_action.triggered.connect(lambda: self.editor_window._cut_selected_objects())
+        
+        paste_action = menu.addAction("Paste")
+        paste_action.setEnabled(self.editor_window._clipboard_has_objects())
+        paste_action.triggered.connect(lambda: self.editor_window._paste_objects())
+        
+        menu.addSeparator()
+        
+        delete_action = menu.addAction("Delete")
+        delete_action.setEnabled(has_selection)
+        delete_action.triggered.connect(lambda: self.editor_window._delete_selected_objects())
+        
+        menu.exec(self.viewport().mapToGlobal(pos))
+
 
 class EditorWindow(QtWidgets.QMainWindow):
     # Signal emitted when a play mode error occurs
@@ -1063,6 +1317,14 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._scene_auto_objects = set() # Show all objects
         self._object_items: Dict[GameObject, QtWidgets.QTreeWidgetItem] = {}
         self._component_fields: list[QtWidgets.QWidget] = []
+        
+        # Clipboard for copy/cut/paste operations
+        self._clipboard_objects: list[GameObject] = []
+        self._clipboard_cut: bool = False
+        
+        # Clipboard for file operations
+        self._clipboard_files: list[str] = []
+        self._clipboard_files_cut: bool = False
         self._components_dirty = True
 
         # Scene file management
@@ -1165,28 +1427,90 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._files_dock = QtWidgets.QDockWidget("Project", self)
         self._files_dock.setObjectName("EditorProjectDock")
         self.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self._files_dock)
+        
+        # Create play/pause/stop overlay buttons on viewport
+        self._create_play_controls_overlay()
+
+    def _create_play_controls_overlay(self) -> None:
+        """Create Play, Pause, Stop buttons overlay on the viewport (top-center)."""
+        # Create a container widget for the buttons
+        self._play_controls = QtWidgets.QWidget(self._viewport)
+        self._play_controls.setStyleSheet("""
+            QWidget {
+                background-color: rgba(40, 40, 40, 200);
+                border-radius: 5px;
+            }
+            QPushButton {
+                background-color: #4a4a4a;
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 3px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #5a5a5a;
+            }
+            QPushButton:pressed {
+                background-color: #3a3a3a;
+            }
+        """)
+        
+        layout = QtWidgets.QHBoxLayout(self._play_controls)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(4)
+        
+        # Play button
+        self._play_btn = QtWidgets.QPushButton("▶ Play", self._play_controls)
+        self._play_btn.setFixedWidth(70)
+        self._play_btn.clicked.connect(self._on_play_clicked)
+        layout.addWidget(self._play_btn)
+        
+        # Pause button
+        self._pause_btn = QtWidgets.QPushButton("⏸ Pause", self._play_controls)
+        self._pause_btn.setFixedWidth(70)
+        self._pause_btn.clicked.connect(self._on_pause_clicked)
+        self._pause_btn.setEnabled(False)
+        layout.addWidget(self._pause_btn)
+        
+        # Stop button
+        self._stop_btn = QtWidgets.QPushButton("⏹ Stop", self._play_controls)
+        self._stop_btn.setFixedWidth(70)
+        self._stop_btn.clicked.connect(self._on_stop_clicked)
+        self._stop_btn.setEnabled(False)
+        layout.addWidget(self._stop_btn)
+        
+        # Position at top-center
+        self._position_play_controls()
+        
+        # Update position on viewport resize
+        self._viewport.resized.connect(self._position_play_controls)
+    
+    def _position_play_controls(self) -> None:
+        """Position the play controls overlay at top-center of viewport."""
+        if not hasattr(self, '_play_controls'):
+            return
+        
+        # Get viewport size
+        viewport_size = self._viewport.size()
+        
+        # Size the controls widget
+        self._play_controls.adjustSize()
+        
+        # Center horizontally, 10px from top
+        x = (viewport_size.width() - self._play_controls.width()) // 2
+        y = 10
+        
+        self._play_controls.move(x, y)
+        self._play_controls.raise_()  # Bring to front
 
     def _setup_toolbar(self) -> None:
         toolbar = QtWidgets.QToolBar("Tools", self)
         toolbar.setMovable(False)
         self.addToolBar(QtCore.Qt.ToolBarArea.TopToolBarArea, toolbar)
 
-        self._add_toolbar_button(toolbar, "X-", lambda: self._nudge_selected((-0.5, 0.0, 0.0)))
-        self._add_toolbar_button(toolbar, "X+", lambda: self._nudge_selected((0.5, 0.0, 0.0)))
-        toolbar.addSeparator()
-        self._add_toolbar_button(toolbar, "Y-", lambda: self._nudge_selected((0.0, -0.5, 0.0)))
-        self._add_toolbar_button(toolbar, "Y+", lambda: self._nudge_selected((0.0, 0.5, 0.0)))
-        toolbar.addSeparator()
-        self._add_toolbar_button(toolbar, "Z-", lambda: self._nudge_selected((0.0, 0.0, -0.5)))
-        self._add_toolbar_button(toolbar, "Z+", lambda: self._nudge_selected((0.0, 0.0, 0.5)))
-        
-        toolbar.addSeparator()
-        self._play_action = self._add_toolbar_button(toolbar, "Play", self._on_play_clicked)
-        self._pause_action = self._add_toolbar_button(toolbar, "Pause", self._on_pause_clicked)
-        self._stop_action = self._add_toolbar_button(toolbar, "Stop", self._on_stop_clicked)
-        
-        self._pause_action.setEnabled(False)
-        self._stop_action.setEnabled(False)
+        # Note: Play, Pause, Stop buttons are now in the viewport (top-center)
+        # The nudge buttons (X-/+, Y-/+, Z-/+) have been removed for cleaner UI
 
     def _add_toolbar_button(self, toolbar: QtWidgets.QToolBar, label: str, callback) -> QtGui.QAction:
         action = QtGui.QAction(label, self)
@@ -1203,18 +1527,6 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._scene_label = QtWidgets.QLabel("Untitled Scene")
         self._scene_label.setStyleSheet("font-weight: bold; font-size: 14px; padding: 4px;")
         layout.addWidget(self._scene_label)
-
-        button_row = QtWidgets.QHBoxLayout()
-        add_button = QtWidgets.QPushButton("Add", panel)
-        remove_button = QtWidgets.QPushButton("Remove", panel)
-        refresh_button = QtWidgets.QPushButton("Refresh", panel)
-        add_button.clicked.connect(self._show_add_menu)
-        remove_button.clicked.connect(self._remove_selected)
-        refresh_button.clicked.connect(self._refresh_hierarchy)
-        button_row.addWidget(add_button)
-        button_row.addWidget(remove_button)
-        button_row.addWidget(refresh_button)
-        layout.addLayout(button_row)
 
         self._hierarchy_tree = HierarchyTreeWidget(self, self)
         self._hierarchy_tree.setHeaderLabel("GameObjects")
@@ -1632,17 +1944,55 @@ class {class_name}(Script):
                 print(tb)
 
     def _add_component_to_selected(self, component) -> None:
-        obj = self._selection.game_object
-        if not obj:
+        objects = self._selection.game_objects
+        if not objects:
             return
-        obj.add_component(component)
+        
+        # Add component to ALL selected gameObjects
+        # Create a new instance for each object using the component's class
+        from src.engine3d.component import Script
+        
+        for i, obj in enumerate(objects):
+            if i == 0:
+                # First object gets the original component
+                obj.add_component(component)
+                # Watch the script file for changes if it's a Script component
+                self._watch_script_component(component)
+            else:
+                # Subsequent objects get a new instance of the same component class
+                try:
+                    # Create new instance of the component's class
+                    new_component = type(component)()
+                    
+                    # For scripts, we need to ensure the class is properly loaded
+                    if isinstance(component, Script):
+                        # Copy inspector field values from original
+                        for attr_name in dir(type(component)):
+                            if not attr_name.startswith('_'):
+                                try:
+                                    attr = getattr(type(component), attr_name)
+                                    if hasattr(attr, 'default_value') or hasattr(attr, 'field_type'):
+                                        # This is an InspectorField, copy the value
+                                        val = getattr(component, attr_name, None)
+                                        if val is not None:
+                                            setattr(new_component, attr_name, val)
+                                except Exception:
+                                    pass
+                    
+                    obj.add_component(new_component)
+                except Exception:
+                    # Fallback: try deepcopy
+                    import copy
+                    try:
+                        new_component = copy.deepcopy(component)
+                        obj.add_component(new_component)
+                    except Exception:
+                        pass  # Skip this object if component can't be copied
+        
         self._components_dirty = True
         self._update_inspector_fields(force_components=True)
         self._viewport.update()
         self._mark_scene_dirty()
-        
-        # Watch the script file for changes if it's a Script component
-        self._watch_script_component(component)
 
     def _remove_component(self, component) -> None:
         """Remove a component from the selected game object."""
@@ -2854,6 +3204,9 @@ class {class_name}(Script):
             # Store original scene state
             self._original_scene_data = self._scene._to_scene_dict()
             
+            # Store selected object IDs to restore after play mode
+            self._pre_play_selection_ids = [obj._id for obj in self._selection.game_objects if obj]
+            
             # Save any open ScriptableObject changes before play
             if hasattr(self, '_current_scriptable_object') and self._current_scriptable_object is not None:
                 if hasattr(self, '_current_scriptable_object_path') and self._current_scriptable_object_path:
@@ -2878,10 +3231,13 @@ class {class_name}(Script):
             self._playing = True
             self._paused = False
             
-            self._play_action.setEnabled(False)
-            self._pause_action.setEnabled(True)
-            self._stop_action.setEnabled(True)
-            self._pause_action.setText("Pause")
+            self._play_btn.setEnabled(False)
+            self._pause_btn.setEnabled(True)
+            self._stop_btn.setEnabled(True)
+            self._pause_btn.setText("⏸ Pause")
+            
+            # Make Play button more noticeable during play mode
+            self._play_btn.setStyleSheet("background-color: #28a745; color: white; font-weight: bold;")
             
         except Exception as e:
             import traceback
@@ -2897,7 +3253,7 @@ class {class_name}(Script):
             return
             
         self._paused = not self._paused
-        self._pause_action.setText("Resume" if self._paused else "Pause")
+        self._pause_btn.setText("▶ Resume" if self._paused else "⏸ Pause")
 
     def _on_stop_clicked(self) -> None:
         """Stop play mode and restore scene state."""
@@ -2930,14 +3286,36 @@ class {class_name}(Script):
                 self._window.show_scene(self._scene)
                 
                 self._refresh_hierarchy()
-                self._select_object(None)
+                
+                # Restore previous selection (so user sees the particle system playing in inspector)
+                restored_selection = []
+                if hasattr(self, '_pre_play_selection_ids'):
+                    for obj_id in self._pre_play_selection_ids:
+                        for obj in self._scene.objects:
+                            if obj._id == obj_id:
+                                restored_selection.append(obj)
+                                break
+                    if restored_selection:
+                        self._select_object(restored_selection[0])
+                        # Also select multi-selection if there were multiple
+                        if len(restored_selection) > 1:
+                            self._selection.game_objects = restored_selection
+                    else:
+                        self._select_object(None)
+                    delattr(self, '_pre_play_selection_ids')
+                else:
+                    self._select_object(None)
+                
                 self._viewport.update()
                 self._viewport.doneCurrent()
             
-            self._play_action.setEnabled(True)
-            self._pause_action.setEnabled(False)
-            self._stop_action.setEnabled(False)
-            self._pause_action.setText("Pause")
+            self._play_btn.setEnabled(True)
+            self._pause_btn.setEnabled(False)
+            self._stop_btn.setEnabled(False)
+            self._pause_btn.setText("⏸ Pause")
+            
+            # Reset Play button style when stopped
+            self._play_btn.setStyleSheet("")
             
         except Exception as e:
             # Log error to console instead of popup
@@ -3289,6 +3667,26 @@ class {class_name}(Script):
         # Ctrl+O to open scene
         open_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+O"), self)
         open_shortcut.activated.connect(self._open_scene_dialog)
+        
+        # Ctrl+C to copy
+        copy_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+C"), self)
+        copy_shortcut.activated.connect(self._on_copy_shortcut)
+        
+        # Ctrl+X to cut
+        cut_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+X"), self)
+        cut_shortcut.activated.connect(self._on_cut_shortcut)
+        
+        # Ctrl+V to paste
+        paste_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+V"), self)
+        paste_shortcut.activated.connect(self._on_paste_shortcut)
+        
+        # Delete to delete selected
+        delete_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Delete"), self)
+        delete_shortcut.activated.connect(self._on_delete_shortcut)
+        
+        # Also add Backspace for delete
+        backspace_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Backspace"), self)
+        backspace_shortcut.activated.connect(self._on_delete_shortcut)
 
     def _setup_deselect_shortcut(self) -> None:
         esc_shortcut = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Escape), self)
@@ -3297,6 +3695,44 @@ class {class_name}(Script):
     def _deselect_all(self) -> None:
         self._hierarchy_tree.clearSelection()
         self._select_object(None)
+
+    def _on_copy_shortcut(self) -> None:
+        """Handle Ctrl+C shortcut."""
+        # Check if hierarchy has focus/selection
+        if self._hierarchy_tree.hasFocus() or self._hierarchy_tree.selectedItems():
+            self._copy_selected_objects()
+        elif hasattr(self, '_file_view') and self._file_view is not None:
+            if self._file_view.hasFocus() or self._file_view.selectedIndexes():
+                self._file_view._copy_selected_files()
+    
+    def _on_cut_shortcut(self) -> None:
+        """Handle Ctrl+X shortcut."""
+        if self._hierarchy_tree.hasFocus() or self._hierarchy_tree.selectedItems():
+            self._cut_selected_objects()
+        elif hasattr(self, '_file_view') and self._file_view is not None:
+            if self._file_view.hasFocus() or self._file_view.selectedIndexes():
+                self._file_view._cut_selected_files()
+    
+    def _on_paste_shortcut(self) -> None:
+        """Handle Ctrl+V shortcut."""
+        if self._hierarchy_tree.hasFocus() or self._hierarchy_tree.selectedItems():
+            self._paste_objects()
+        elif hasattr(self, '_file_view') and self._file_view is not None:
+            if self._file_view.hasFocus() or self._file_view.selectedIndexes():
+                directory = str(self._file_view.get_current_path())
+                self._file_view._paste_files(directory)
+            else:
+                # Paste to current directory
+                directory = str(self._file_view.get_current_path())
+                self._file_view._paste_files(directory)
+    
+    def _on_delete_shortcut(self) -> None:
+        """Handle Delete/Backspace shortcut."""
+        if self._hierarchy_tree.hasFocus() or self._hierarchy_tree.selectedItems():
+            self._delete_selected_objects()
+        elif hasattr(self, '_file_view') and self._file_view is not None:
+            if self._file_view.hasFocus() or self._file_view.selectedIndexes():
+                self._file_view._delete_selected_files()
 
     def _open_scene_dialog(self) -> None:
         """Open a dialog to select a scene to load."""
@@ -3330,6 +3766,15 @@ class {class_name}(Script):
             simulate = self._playing and not self._paused
             if not self._window.tick(simulate=simulate):
                 self._timer.stop()
+            
+            # Update playing particle systems even when not in play mode (for inspector preview)
+            if not simulate:
+                from src.engine3d.particle import ParticleSystem
+                if self._scene:
+                    for obj in self._scene.objects:
+                        for comp in obj.components:
+                            if isinstance(comp, ParticleSystem) and comp.is_playing:
+                                comp.update()
         except Exception as e:
             # Handle errors during play mode
             if self._playing:
@@ -3587,8 +4032,10 @@ class {class_name}(Script):
         self._object_items.clear()
         
         # Build hierarchy based on transform parent-child relationships
-        # First, collect all non-auto objects
-        all_objects = [obj for obj in self._scene.objects if obj.name not in self._scene_auto_objects]
+        # First, collect all non-auto objects, excluding internal particle system particles
+        all_objects = [obj for obj in self._scene.objects 
+                       if obj.name not in self._scene_auto_objects 
+                       and not getattr(obj, '_is_particle_system_particle', False)]
         
         # Track which objects have been added
         added = set()
@@ -3720,10 +4167,474 @@ class {class_name}(Script):
         self._viewport.doneCurrent()
         self._mark_scene_dirty()
 
+    def _clipboard_has_objects(self) -> bool:
+        """Check if clipboard has objects to paste."""
+        return len(self._clipboard_objects) > 0
+
+    def _clipboard_has_files(self) -> bool:
+        """Check if clipboard has files to paste."""
+        return len(self._clipboard_files) > 0
+
+    def _copy_selected_objects(self) -> None:
+        """Copy selected objects to clipboard by snapshotting their data."""
+        items = self._hierarchy_tree.selectedItems()
+        if not items:
+            return
+        
+        self._clipboard_objects = []
+        self._clipboard_snapshots = []  # Store serialized data snapshots
+        
+        for item in items:
+            for obj, it in self._object_items.items():
+                if it is item:
+                    self._clipboard_objects.append(obj)
+                    # Snapshot the object's data (including children) at copy time
+                    snapshot = self._snapshot_gameobject(obj)
+                    self._clipboard_snapshots.append(snapshot)
+                    break
+        
+        self._clipboard_cut = False
+        print(f"Copied {len(self._clipboard_objects)} object(s)")
+
+    def _cut_selected_objects(self) -> None:
+        """Cut selected objects to clipboard by snapshotting their data."""
+        items = self._hierarchy_tree.selectedItems()
+        if not items:
+            return
+        
+        self._clipboard_objects = []
+        self._clipboard_snapshots = []
+        
+        for item in items:
+            for obj, it in self._object_items.items():
+                if it is item:
+                    self._clipboard_objects.append(obj)
+                    snapshot = self._snapshot_gameobject(obj)
+                    self._clipboard_snapshots.append(snapshot)
+                    break
+        
+        self._clipboard_cut = True
+        print(f"Cut {len(self._clipboard_objects)} object(s)")
+
+    def _snapshot_gameobject(self, obj: GameObject) -> dict:
+        """Create a snapshot (serialized data) of a GameObject and all its children."""
+        from src.engine3d.gameobject import Prefab
+        import tempfile
+        import os
+        
+        # Use prefab serialization to capture the object's data
+        temp_path = os.path.join(tempfile.gettempdir(), f"_snapshot_{obj._id}.prefab")
+        try:
+            # Create a snapshot prefab from the object
+            prefab = Prefab.create_from_gameobject(obj, temp_path)
+            
+            # Also snapshot all children recursively
+            children_snapshots = []
+            for child_transform in obj.transform.children:
+                if child_transform.game_object:
+                    child_snapshot = self._snapshot_gameobject(child_transform.game_object)
+                    children_snapshots.append(child_snapshot)
+            
+            # Get parent info for restoring same-level paste
+            parent_name = None
+            if obj.transform.parent:
+                parent_obj = obj.transform.parent.game_object
+                if parent_obj:
+                    parent_name = parent_obj.name
+            
+            # Return the snapshot data
+            snapshot = {
+                'prefab_data': prefab._data.copy() if prefab._data else None,
+                'position': list(obj.transform.position),
+                'rotation': list(obj.transform.rotation),
+                'scale': list(obj.transform.scale_xyz),
+                'name': obj.name,
+                'tag': obj.tag,
+                'is_prefab_instance': hasattr(obj, '_prefab') and obj._prefab is not None,
+                'prefab_path': obj._prefab.path if hasattr(obj, '_prefab') and obj._prefab else None,
+                'parent_name': parent_name,  # Store original parent name for same-level paste
+                'children': children_snapshots,
+            }
+            
+            # Cleanup temp file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            
+            return snapshot
+        except Exception as e:
+            print(f"Failed to snapshot object: {e}")
+            return None
+
+    def _paste_objects(self) -> None:
+        """Paste objects from clipboard using snapshots (not references to original objects).
+        
+        Paste behavior:
+        - If a GameObject is selected → paste at same level as selected (siblings, same parent)
+        - If no GameObject is selected → paste at same level as original (find parent from snapshot)
+        """
+        if not hasattr(self, '_clipboard_snapshots') or not self._clipboard_snapshots:
+            # Fallback to old behavior if no snapshots
+            if not self._clipboard_objects:
+                return
+            self._viewport.makeCurrent()
+            selected_obj = self._selection.game_object
+            new_objects = []
+            for obj in self._clipboard_objects:
+                new_obj = self._clone_gameobject(obj)
+                if selected_obj:
+                    # Paste at same level as selected (same parent = siblings)
+                    new_obj.transform.parent = selected_obj.transform.parent
+                else:
+                    new_obj.transform.parent = None
+                self._scene.add_object(new_obj)
+                new_objects.append(new_obj)
+            
+            if self._clipboard_cut:
+                for obj in self._clipboard_objects:
+                    if obj in self._scene.objects:
+                        self._scene.remove_object(obj)
+                self._clipboard_objects = []
+                self._clipboard_cut = False
+        else:
+            # Use snapshots - paste from saved data, not references
+            self._viewport.makeCurrent()
+            selected_obj = self._selection.game_object  # User-selected object (if any)
+            new_objects = []
+            
+            for snapshot in self._clipboard_snapshots:
+                if snapshot is None:
+                    continue
+                new_obj = self._reconstruct_from_snapshot(snapshot)
+                if new_obj:
+                    # Determine parent:
+                    # 1. If user has selected a GameObject → paste at same level (siblings)
+                    # 2. Otherwise → paste at same level as original (find by parent_name)
+                    if selected_obj:
+                        # Same level as selected = same parent as selected
+                        new_obj.transform.parent = selected_obj.transform.parent
+                    else:
+                        # No selection - use original parent from snapshot
+                        parent_name = snapshot.get('parent_name')
+                        if parent_name:
+                            # Find parent by name in scene
+                            parent_found = None
+                            for obj in self._scene.objects:
+                                if obj.name == parent_name:
+                                    parent_found = obj
+                                    break
+                            if parent_found:
+                                new_obj.transform.parent = parent_found.transform
+                            else:
+                                # Original parent not found, paste at root
+                                new_obj.transform.parent = None
+                        else:
+                            # Original was at root
+                            new_obj.transform.parent = None
+                    
+                    self._scene.add_object(new_obj)
+                    new_objects.append(new_obj)
+            
+            # If it was cut, remove original objects
+            if self._clipboard_cut:
+                for obj in self._clipboard_objects:
+                    if obj in self._scene.objects:
+                        self._scene.remove_object(obj)
+                self._clipboard_objects = []
+                self._clipboard_snapshots = []
+                self._clipboard_cut = False
+        
+        self._refresh_hierarchy()
+        
+        # Select the pasted objects
+        if new_objects:
+            self._select_object(new_objects[0])
+            for obj in new_objects:
+                if obj in self._object_items:
+                    self._object_items[obj].setSelected(True)
+        
+        self._viewport.update()
+        self._viewport.doneCurrent()
+        self._mark_scene_dirty()
+
+    def _reconstruct_from_snapshot(self, snapshot: dict) -> GameObject:
+        """Reconstruct a GameObject from a snapshot (serialized data)."""
+        from src.engine3d.gameobject import Prefab
+        import tempfile
+        import os
+        
+        if snapshot is None or snapshot.get('prefab_data') is None:
+            return None
+        
+        try:
+            # Create a temporary prefab from the snapshot data
+            temp_path = os.path.join(tempfile.gettempdir(), f"_paste_{id(snapshot)}.prefab")
+            
+            # Write the snapshot prefab data
+            import json
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(snapshot['prefab_data'], f)
+            
+            # Load and instantiate
+            prefab = Prefab.load(temp_path)
+            clone = prefab.instantiate(scene=None, position=tuple(snapshot['position']))
+            
+            # Restore additional data
+            clone.name = snapshot.get('name', clone.name)
+            clone.tag = snapshot.get('tag', clone.tag)
+            
+            # Unregister from temp prefab if not a real prefab instance
+            if not snapshot.get('is_prefab_instance', False):
+                if hasattr(clone, '_prefab'):
+                    delattr(clone, '_prefab')
+                if clone in prefab._instances:
+                    prefab._instances.remove(clone)
+            
+            # Cleanup temp file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            
+            # Reconstruct children from snapshots
+            for child_snapshot in snapshot.get('children', []):
+                child_obj = self._reconstruct_from_snapshot(child_snapshot)
+                if child_obj:
+                    child_obj.transform.parent = clone.transform
+                    self._scene.add_object(child_obj)
+            
+            return clone
+            
+        except Exception as e:
+            print(f"Failed to reconstruct from snapshot: {e}")
+            return None
+
+    def _clone_gameobject(self, obj: GameObject) -> GameObject:
+        """Create a clone of a GameObject with all components and children (deep copy).
+        
+        If the original was from a prefab, the clone is registered with the same prefab.
+        If not, the clone is a standalone GameObject.
+        Tags are copied. All children are recursively cloned.
+        """
+        from src.engine3d.gameobject import Prefab
+        import tempfile
+        import os
+        
+        # Check if original is connected to a prefab
+        original_prefab = getattr(obj, '_prefab', None)
+        
+        if original_prefab is not None:
+            # Original is from a prefab - create another instance of the same prefab
+            # The prefab instantiate doesn't include children, so we need to handle that
+            try:
+                # Create the root clone from prefab
+                clone = original_prefab.instantiate(
+                    scene=None,  # Don't add to scene yet
+                    position=obj.transform.position,
+                    rotation=obj.transform.rotation,
+                    parent=obj.transform.parent
+                )
+                clone.name = f"{obj.name} (Copy)"
+                
+                # Clone all children recursively
+                self._clone_children_recursive(obj, clone)
+                
+                # Add to scene
+                self._scene.add_object(clone)
+                return clone
+            except Exception as e:
+                print(f"Failed to instantiate from prefab: {e}")
+                # Fall through to manual copy
+        
+        # Not from a prefab - create a standalone copy with children
+        try:
+            # Create the root clone using prefab system for deep component copy
+            temp_path = os.path.join(tempfile.gettempdir(), f"_clipboard_{obj._id}.prefab")
+            prefab = Prefab.create_from_gameobject(obj, temp_path)
+            clone = prefab.instantiate(scene=None, position=obj.transform.position)
+            clone.name = f"{obj.name} (Copy)"
+            
+            # Unregister from the temporary prefab - it's not really a prefab instance
+            if hasattr(clone, '_prefab'):
+                delattr(clone, '_prefab')
+            if clone in prefab._instances:
+                prefab._instances.remove(clone)
+            
+            # Clone all children recursively
+            self._clone_children_recursive(obj, clone)
+            
+            # Add to scene
+            self._scene.add_object(clone)
+            return clone
+        except Exception as e:
+            print(f"Failed to clone object: {e}")
+            # Fallback: create basic GameObject
+            new_obj = GameObject(f"{obj.name} (Copy)")
+            new_obj.transform.position = obj.transform.position
+            new_obj.transform.rotation = obj.transform.rotation
+            new_obj.transform.scale_xyz = obj.transform.scale_xyz
+            new_obj.tag = obj.tag  # Copy tag in fallback
+            
+            # Clone children in fallback too
+            self._clone_children_recursive(obj, new_obj)
+            self._scene.add_object(new_obj)
+            return new_obj
+
+    def _clone_children_recursive(self, source_obj: GameObject, target_obj: GameObject) -> None:
+        """Recursively clone all children of source_obj and attach them to target_obj."""
+        from src.engine3d.gameobject import Prefab
+        import tempfile
+        import os
+        
+        for child_transform in source_obj.transform.children:
+            child_obj = child_transform.game_object
+            
+            # Check if child is from a prefab
+            child_prefab = getattr(child_obj, '_prefab', None)
+            
+            try:
+                if child_prefab is not None:
+                    # Child is from a prefab - instantiate from same prefab
+                    new_child = child_prefab.instantiate(
+                        scene=None,
+                        position=child_obj.transform.position,
+                        rotation=child_obj.transform.rotation,
+                        parent=target_obj.transform
+                    )
+                    new_child.name = child_obj.name
+                    # Note: We don't register child as prefab instance separately
+                    # The child is just a regular child of the cloned parent
+                    if hasattr(new_child, '_prefab'):
+                        delattr(new_child, '_prefab')
+                    if new_child in child_prefab._instances:
+                        child_prefab._instances.remove(new_child)
+                else:
+                    # Child is not from prefab - create standalone copy
+                    temp_path = os.path.join(tempfile.gettempdir(), f"_clipboard_child_{child_obj._id}.prefab")
+                    child_prefab = Prefab.create_from_gameobject(child_obj, temp_path)
+                    new_child = child_prefab.instantiate(
+                        scene=None,
+                        position=child_obj.transform.position,
+                        rotation=child_obj.transform.rotation,
+                        parent=target_obj.transform
+                    )
+                    new_child.name = child_obj.name
+                    
+                    # Unregister from temporary prefab
+                    if hasattr(new_child, '_prefab'):
+                        delattr(new_child, '_prefab')
+                    if new_child in child_prefab._instances:
+                        child_prefab._instances.remove(new_child)
+                
+                # Add to scene
+                self._scene.add_object(new_child)
+                
+                # Recursively clone this child's children
+                self._clone_children_recursive(child_obj, new_child)
+                
+            except Exception as e:
+                print(f"Failed to clone child {child_obj.name}: {e}")
+
+    def _delete_selected_objects(self) -> None:
+        """Delete selected objects by recursively looping over children and their children."""
+        items = self._hierarchy_tree.selectedItems()
+        if not items:
+            return
+        
+        objects_to_delete = []
+        for item in items:
+            for obj, it in self._object_items.items():
+                if it is item:
+                    objects_to_delete.append(obj)
+                    break
+        
+        if not objects_to_delete:
+            return
+        
+        # Filter out objects that are descendants of other selected objects
+        # (they will be deleted when their parent is deleted)
+        def is_descendant_of_any(obj, others):
+            for other in others:
+                if other is obj:
+                    continue
+                current = obj.transform.parent
+                while current:
+                    if current.game_object is other:
+                        return True
+                    current = current.parent
+            return False
+        
+        filtered = [obj for obj in objects_to_delete if not is_descendant_of_any(obj, objects_to_delete)]
+        
+        self._viewport.makeCurrent()
+        
+        # Recursively collect all objects to delete (selected + all their descendants)
+        all_to_delete = []
+        
+        def collect_all_descendants(obj):
+            """Recursively collect object and all its children, grandchildren, etc."""
+            all_to_delete.append(obj)
+            for child_transform in obj.transform.children:
+                if child_transform.game_object:
+                    collect_all_descendants(child_transform.game_object)
+        
+        for obj in filtered:
+            collect_all_descendants(obj)
+        
+        # Remove duplicates while preserving order (bottom-up deletion)
+        # Use a set to track seen objects
+        seen = set()
+        unique_to_delete = []
+        for obj in all_to_delete:
+            if id(obj) not in seen:
+                seen.add(id(obj))
+                unique_to_delete.append(obj)
+        
+        # Delete in reverse order (children before parents)
+        for obj in reversed(unique_to_delete):
+            if obj in self._scene.objects:
+                self._scene.remove_object(obj)
+        
+        self._selection.game_object = None
+        self._refresh_hierarchy()
+        self._update_inspector_fields(force_components=True)
+        if self._window:
+            self._window.editor_selected_object = None
+        self._viewport.update()
+        self._viewport.doneCurrent()
+        self._mark_scene_dirty()
+
+    def _create_gameobject(self, obj_type: str) -> None:
+        """Create a new GameObject of the specified type."""
+        new_obj = None
+        name = ""
+        
+        parent_obj = self._selection.game_object
+        
+        if obj_type == "Empty":
+            new_obj = GameObject()
+            name = "GameObject"
+        elif obj_type == "Cube":
+            new_obj = create_cube(1.0)
+            name = "Cube"
+        elif obj_type == "Sphere":
+            new_obj = create_sphere(0.75)
+            name = "Sphere"
+        elif obj_type == "Plane":
+            new_obj = create_plane(5.0, 5.0)
+            name = "Plane"
+        elif obj_type == "Camera":
+            from src.engine3d.camera import Camera3D
+            new_obj = GameObject("Camera")
+            new_obj.add_component(Camera3D())
+            name = "Camera"
+        
+        if new_obj:
+            if parent_obj:
+                new_obj.transform.parent = parent_obj.transform
+            self._add_object(new_obj, name)
+
     def _on_hierarchy_selection(self) -> None:
         items = self._hierarchy_tree.selectedItems()
         if not items:
-            self._select_object(None)
+            self._select_objects([])
             return
         
         # Clear file selection to ensure exclusive selection
@@ -3732,13 +4643,16 @@ class {class_name}(Script):
             self._current_prefab = None
             self._current_prefab_path = None
         
-        selected_item = items[0]
-        for obj, item in self._object_items.items():
-            if item is selected_item:
-                self._select_object(obj)
-                return
-        # If not found directly, it might be a child item (shouldn't happen with our dict, but just in case)
-        self._select_object(None)
+        # Collect all selected GameObjects
+        selected_objects = []
+        for item in items:
+            for obj, it in self._object_items.items():
+                if it is item:
+                    selected_objects.append(obj)
+                    break
+        
+        # Update selection with all selected objects
+        self._select_objects(selected_objects)
 
     def _on_hierarchy_double_click(self, item: QtWidgets.QTreeWidgetItem, column: int) -> None:
         for obj, it in self._object_items.items():
@@ -3758,17 +4672,54 @@ class {class_name}(Script):
         self._update_camera_position()
 
     def _select_object(self, obj: Optional[GameObject]) -> None:
-        self._selection.game_object = obj
+        """Select a single object (backward compatible)."""
+        self._select_objects([obj] if obj else [])
+
+    def _select_objects(self, objects: List[GameObject]) -> None:
+        """Select multiple GameObjects and update inspector for multi-selection."""
+        from src.engine3d.particle import ParticleSystem
+        
+        # Filter out None values
+        objects = [obj for obj in objects if obj is not None]
+        
+        # Stop particle systems on objects that are being deselected
+        previous_selection = getattr(self._selection, 'game_objects', [])
+        for obj in previous_selection:
+            if obj not in objects:
+                # Object is being deselected - stop its particle systems
+                for comp in obj.components:
+                    if isinstance(comp, ParticleSystem) and comp.is_playing:
+                        comp.stop(clear_particles=True)
+        
+        # Commit any pending edits before changing selection
+        # This ensures field changes are applied before rebuilding inspector
+        if self._inspector_name.hasFocus():
+            self._inspector_name.clearFocus()  # Triggers editingFinished -> _rename_selected
+        
+        # Also check tag combo box
+        if self._inspector_tag.hasFocus():
+            self._inspector_tag.clearFocus()  # May trigger activated signal
+        
+        # Check transform fields
+        for f in self._pos_fields + self._rot_fields + self._scale_fields:
+            if f.hasFocus():
+                f.clearFocus()  # Triggers valueChanged if needed
+        
+        self._selection.game_objects = objects
+        # Primary object is first one (for backward compat)
+        self._selection.game_object = objects[0] if objects else None
+        
         if self._window:
-            self._window.editor_selected_object = obj
+            self._window.editor_selected_object = objects[0] if objects else None
 
         self._components_dirty = True
 
         # Block signals to avoid feedback loop while updating UI
         self._set_inspector_signals_blocked(True)
-        if obj and obj in self._object_items:
-            self._hierarchy_tree.setCurrentItem(self._object_items[obj])
+        
+        # Update inspector (handles both single and multi-selection)
         self._update_inspector_fields(force_components=True)
+        
         self._set_inspector_signals_blocked(False)
         self._components_dirty = False
 
@@ -3788,17 +4739,20 @@ class {class_name}(Script):
             self._on_prefab_field_changed()
             return
         
-        obj = self._selection.game_object
-        if not obj:
+        objects = self._selection.game_objects
+        if not objects:
             return
+        
         name = self._inspector_name.text().strip()
         if not name:
             return
-        obj.name = name
-        if obj.name in self._scene_auto_objects:
-            return
-        if obj in self._object_items:
-            self._object_items[obj].setText(0, name)
+        
+        # Apply to ALL selected objects
+        for obj in objects:
+            obj.name = name
+            if obj in self._object_items:
+                self._object_items[obj].setText(0, name)
+        
         self._viewport.update()
 
     def _set_selected_tag(self) -> None:
@@ -3823,27 +4777,61 @@ class {class_name}(Script):
             self._mark_scene_dirty()
             return
         
-        obj = self._selection.game_object
-        if not obj:
+        objects = self._selection.game_objects
+        if not objects:
             return
-        obj.tag = tag_value
+        
+        # Apply to ALL selected objects
+        for obj in objects:
+            obj.tag = tag_value
+        
         self._viewport.update()
         self._mark_scene_dirty()
 
     def _on_transform_changed(self) -> None:
-        obj = self._selection.game_object
-        if not obj:
+        objects = self._selection.game_objects
+        if not objects:
             return
 
-        pos = [f.value() for f in self._pos_fields]
-        rot = [f.value() for f in self._rot_fields]
-        scale = [f.value() for f in self._scale_fields]
+        # Get values, handling multi-value "-" state
+        # _multi_value = True means field shows "-" (values differ), user hasn't explicitly changed
+        # When user interacts (types, clicks arrows), valueChanged fires and we apply
+        pos = []
+        for i, f in enumerate(self._pos_fields):
+            if getattr(f, '_multi_value', False):
+                # Multi-value state, but user is NOW changing - apply new value
+                pos.append(f.value())
+                f._multi_value = False  # Clear flag
+                f.setSpecialValueText("")  # Clear "-" display
+            else:
+                pos.append(f.value())
+        
+        rot = []
+        for i, f in enumerate(self._rot_fields):
+            if getattr(f, '_multi_value', False):
+                rot.append(f.value())
+                f._multi_value = False
+                f.setSpecialValueText("")
+            else:
+                rot.append(f.value())
+        
+        scale = []
+        for i, f in enumerate(self._scale_fields):
+            if getattr(f, '_multi_value', False):
+                scale.append(f.value())
+                f._multi_value = False
+                f.setSpecialValueText("")
+            else:
+                scale.append(f.value())
 
-        obj.transform.position = pos
-        obj.transform.rotation = rot
-        obj.transform.scale_xyz = scale
+        # Apply to ALL selected objects
+        for obj in objects:
+            obj.transform.position = pos
+            obj.transform.rotation = rot
+            obj.transform.scale_xyz = scale
+        
         if self._window:
-            self._window.editor_selected_object = obj
+            self._window.editor_selected_object = objects[0] if objects else None
         self._viewport.update()
         self._mark_scene_dirty()
 
@@ -3860,10 +4848,11 @@ class {class_name}(Script):
         self._set_inspector_signals_blocked(False)
 
     def _update_inspector_fields(self, force_components: bool = False) -> None:
-        obj = self._selection.game_object
+        """Update inspector fields. Supports both single and multi-selection."""
+        selected_objects = self._selection.game_objects
+        obj = self._selection.game_object  # Primary object
         
         # Clear any ScriptableObject inspector state when showing GameObject
-        # Only clear if we're actually showing a GameObject (obj is not None)
         if obj is not None:
             if hasattr(self, '_current_scriptable_object'):
                 self._current_scriptable_object = None
@@ -3872,10 +4861,9 @@ class {class_name}(Script):
         
         # Check if we're in prefab mode (viewing a prefab file)
         if not obj and hasattr(self, '_current_prefab') and self._current_prefab is not None:
-            # Keep the prefab inspector open, don't clear it
             return
         
-        if not obj:
+        if not obj or len(selected_objects) == 0:
             # If we have a current ScriptableObject, don't clear the inspector
             if hasattr(self, '_current_scriptable_object') and self._current_scriptable_object is not None:
                 self._components_dirty = True
@@ -3898,6 +4886,7 @@ class {class_name}(Script):
             self._components_dirty = True
             return
         
+        # Enable fields for editing
         self._inspector_name.setEnabled(True)
         self._transform_group.setVisible(True)
         for fields in [self._pos_fields, self._rot_fields, self._scale_fields]:
@@ -3907,6 +4896,18 @@ class {class_name}(Script):
         if force_components:
             self._components_dirty = True
 
+        # ===== MULTI-SELECTION HANDLING =====
+        is_multi = len(selected_objects) > 1
+        
+        if is_multi:
+            # Multi-selection: show common values or "-"
+            self._update_inspector_for_multi_selection(selected_objects, force_components)
+        else:
+            # Single selection: original behavior
+            self._update_inspector_for_single_selection(obj, force_components)
+    
+    def _update_inspector_for_single_selection(self, obj: GameObject, force_components: bool = False) -> None:
+        """Update inspector for a single selected GameObject."""
         if not self._inspector_name.hasFocus():
             self._inspector_name.setText(obj.name)
         
@@ -3923,20 +4924,17 @@ class {class_name}(Script):
         
         self._inspector_tag.setEnabled(True)
         if not self._inspector_tag.hasFocus():
-            # Only populate items once per object selection (check if empty)
             from src.engine3d.component import Tag
             if self._inspector_tag.count() == 0:
                 self._inspector_tag.blockSignals(True)
                 existing_tags = Tag.all_tags()
                 self._inspector_tag.addItems(existing_tags)
                 self._inspector_tag.blockSignals(False)
-            # Just update current text without clearing
             self._inspector_tag.blockSignals(True)
             if obj.tag:
                 if self._inspector_tag.findText(obj.tag) >= 0:
                     self._inspector_tag.setCurrentText(obj.tag)
                 else:
-                    # Tag not in dropdown yet, add it
                     self._inspector_tag.addItem(obj.tag)
                     self._inspector_tag.setCurrentText(obj.tag)
             else:
@@ -3963,6 +4961,607 @@ class {class_name}(Script):
         else:
             self._refresh_component_fields(obj)
 
+    def _update_inspector_for_multi_selection(self, objects: List[GameObject], force_components: bool) -> None:
+        """Update inspector for multiple selected GameObjects."""
+        # Helper: check if all objects have the same value for a key
+        def all_same(values):
+            if not values:
+                return True
+            first = values[0]
+            return all(v == first for v in values)
+
+        # ===== Name field =====
+        names = [obj.name for obj in objects]
+        if not self._inspector_name.hasFocus():
+            if all_same(names):
+                self._inspector_name.setText(names[0])
+            else:
+                self._inspector_name.setText("-")
+
+        # ===== Prefab indicator (hide for multi-selection, or show if all same) =====
+        prefab_paths = []
+        for obj in objects:
+            if hasattr(obj, '_prefab') and obj._prefab is not None:
+                if hasattr(obj._prefab, 'path'):
+                    prefab_paths.append(obj._prefab.path)
+        if all_same(prefab_paths) and prefab_paths and prefab_paths[0]:
+            prefab_name = Path(prefab_paths[0]).name
+            self._prefab_source_label.setText(f"📦 From Prefab: {prefab_name}")
+            self._prefab_source_label.setVisible(True)
+        else:
+            self._prefab_source_label.setVisible(False)
+
+        # ===== Tag field =====
+        tags = [obj.tag for obj in objects]
+        self._inspector_tag.setEnabled(True)
+        if not self._inspector_tag.hasFocus():
+            from src.engine3d.component import Tag
+            if self._inspector_tag.count() == 0:
+                self._inspector_tag.blockSignals(True)
+                existing_tags = Tag.all_tags()
+                self._inspector_tag.addItems(existing_tags)
+                self._inspector_tag.blockSignals(False)
+            self._inspector_tag.blockSignals(True)
+            if all_same(tags):
+                tag = tags[0]
+                if tag:
+                    if self._inspector_tag.findText(tag) >= 0:
+                        self._inspector_tag.setCurrentText(tag)
+                    else:
+                        self._inspector_tag.addItem(tag)
+                        self._inspector_tag.setCurrentText(tag)
+                else:
+                    self._inspector_tag.setCurrentText("")
+            else:
+                self._inspector_tag.setCurrentText("-")
+            self._inspector_tag.blockSignals(False)
+
+        # ===== Transform fields =====
+        # Position
+        positions = [obj.transform.position for obj in objects]
+        for i, f in enumerate(self._pos_fields):
+            if not f.hasFocus():
+                values = [p[i] for p in positions]
+                if all_same(values):
+                    f.blockSignals(True)
+                    f.setSpecialValueText("")
+                    f._multi_value = False
+                    f.setValue(values[0])
+                    f.blockSignals(False)
+                else:
+                    f.blockSignals(True)
+                    f.setSpecialValueText("-")
+                    f._multi_value = True
+                    # Show first object's value but mark as multi
+                    f.setValue(values[0] if values else 0)
+                    f.blockSignals(False)
+        
+        # Rotation
+        rotations = [obj.transform.rotation for obj in objects]
+        for i, f in enumerate(self._rot_fields):
+            if not f.hasFocus():
+                values = [r[i] for r in rotations]
+                if all_same(values):
+                    f.blockSignals(True)
+                    f.setSpecialValueText("")
+                    f._multi_value = False
+                    f.setValue(values[0])
+                    f.blockSignals(False)
+                else:
+                    f.blockSignals(True)
+                    f.setSpecialValueText("-")
+                    f._multi_value = True
+                    f.setValue(values[0] if values else 0)
+                    f.blockSignals(False)
+        
+        # Scale
+        scales = [obj.transform.scale_xyz for obj in objects]
+        for i, f in enumerate(self._scale_fields):
+            if not f.hasFocus():
+                values = [s[i] for s in scales]
+                if all_same(values):
+                    f.blockSignals(True)
+                    f.setSpecialValueText("")
+                    f._multi_value = False
+                    f.setValue(values[0])
+                    f.blockSignals(False)
+                else:
+                    f.blockSignals(True)
+                    f.setSpecialValueText("-")
+                    f._multi_value = True
+                    f.setValue(values[0] if values else 0)
+                    f.blockSignals(False)
+
+        # ===== Components =====
+        if force_components or self._components_dirty:
+            self._build_component_fields_multi(objects)
+        else:
+            self._refresh_component_fields_multi(objects)
+    
+    def _build_component_fields_multi(self, objects: List[GameObject]) -> None:
+        """Build component fields for multiple selected objects. Shows only common components."""
+        from src.engine3d.light import Light3D, DirectionalLight3D, PointLight3D
+        from src.physics.collider import Collider, BoxCollider, SphereCollider, CapsuleCollider
+        from src.engine3d.object3d import Object3D
+        from src.physics.rigidbody import Rigidbody
+        
+        self._clear_component_fields()
+        
+        # Find common component types across all objects
+        # Get component class names from first object
+        if not objects:
+            return
+        
+        first_obj = objects[0]
+        common_component_classes = set(type(c).__name__ for c in first_obj.components if c is not first_obj.transform)
+        
+        # Find intersection with all other objects
+        for obj in objects[1:]:
+            obj_component_classes = set(type(c).__name__ for c in obj.components if c is not obj.transform)
+            common_component_classes &= obj_component_classes
+        
+        # Build fields for common components (using first object's component as template)
+        for comp in first_obj.components:
+            if comp is first_obj.transform:
+                continue
+            if type(comp).__name__ not in common_component_classes:
+                continue
+            
+            # Get inspector fields from the component
+            inspector_fields = comp.get_inspector_fields()
+            
+            # Special case: ParticleSystem needs Play/Stop button
+            from src.engine3d.particle import ParticleSystem
+            if isinstance(comp, ParticleSystem):
+                box = self._create_particle_system_fields_multi(comp, inspector_fields, objects)
+            elif inspector_fields:
+                box = self._create_inspector_fields_for_component_multi(comp, inspector_fields, objects)
+            elif isinstance(comp, Light3D):
+                if isinstance(comp, DirectionalLight3D):
+                    box = self._create_directional_light_fields_multi(comp, objects)
+                elif isinstance(comp, PointLight3D):
+                    box = self._create_point_light_fields_multi(comp, objects)
+                else:
+                    box = self._create_light_fields_multi(comp, objects)
+            elif isinstance(comp, Collider):
+                if isinstance(comp, BoxCollider):
+                    box = self._create_box_collider_fields_multi(comp, objects)
+                elif isinstance(comp, SphereCollider):
+                    box = self._create_sphere_collider_fields_multi(comp, objects)
+                elif isinstance(comp, CapsuleCollider):
+                    box = self._create_capsule_collider_fields_multi(comp, objects)
+                else:
+                    box = self._create_collider_fields_multi(comp, objects)
+            elif isinstance(comp, Object3D):
+                box = self._create_object3d_fields_multi(comp, objects)
+            elif isinstance(comp, Rigidbody):
+                box = self._create_rigidbody_fields_multi(comp, objects)
+            else:
+                box = self._create_component_summary_multi(comp, objects)
+            
+            box._component_ref = comp
+            box._selected_objects = objects  # Store reference to all selected objects
+            self._ensure_component_box(box)
+
+        self._components_dirty = False
+    
+    def _refresh_component_fields_multi(self, objects: List[GameObject]) -> None:
+        """Refresh component field values for multi-selection."""
+        for box in self._components_container.findChildren(QtWidgets.QGroupBox):
+            if hasattr(box, '_component_ref') and hasattr(box, '_selected_objects'):
+                self._refresh_component_box_multi(box, box._selected_objects)
+    
+    def _create_inspector_fields_for_component_multi(self, comp, inspector_fields, objects):
+        """Create inspector fields for a component type across multiple objects.
+        
+        inspector_fields is a list of (field_name, InspectorFieldInfo) tuples.
+        """
+        from src.engine3d.component import InspectorFieldType
+        
+        box = QtWidgets.QGroupBox(comp.__class__.__name__, self._components_container)
+        form = QtWidgets.QFormLayout(box)
+        
+        for field_name, field_info in inspector_fields:
+            field_type = field_info.field_type
+            default = field_info.default_value
+            
+            # Get values from all objects
+            values = []
+            for obj in objects:
+                # Find matching component in each object
+                for c in obj.components:
+                    if type(c).__name__ == type(comp).__name__:
+                        val = getattr(c, field_name, default)
+                        values.append(val)
+                        break
+            
+            # Check if all values are the same
+            all_same = len(set(str(v) for v in values)) == 1
+            
+            if field_type == InspectorFieldType.BOOL:
+                checkbox = QtWidgets.QCheckBox()
+                checkbox.setTristate(True)
+                if all_same and values:
+                    checkbox.setCheckState(QtCore.Qt.CheckState.Checked if values[0] else QtCore.Qt.CheckState.Unchecked)
+                else:
+                    checkbox.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
+                checkbox._field_name = field_name
+                checkbox._field_type = field_type
+                checkbox.stateChanged.connect(lambda state, fn=field_name, ft=field_type: 
+                    self._on_multi_field_changed(fn, ft, state))
+                form.addRow(field_name, checkbox)
+            elif field_type == InspectorFieldType.FLOAT:
+                spin = NoWheelSpinBox()
+                spin.setRange(-10000, 10000)
+                spin.setDecimals(3)
+                if all_same and values:
+                    spin.setValue(values[0])
+                else:
+                    spin.setSpecialValueText("-")
+                spin._field_name = field_name
+                spin._field_type = field_type
+                spin.valueChanged.connect(lambda v, fn=field_name, ft=field_type: 
+                    self._on_multi_field_changed(fn, ft, v))
+                form.addRow(field_name, spin)
+            elif field_type == InspectorFieldType.INT:
+                spin = NoWheelIntSpinBox()
+                spin.setRange(-10000, 10000)
+                if all_same and values:
+                    spin.setValue(values[0])
+                else:
+                    spin.setSpecialValueText("-")
+                spin._field_name = field_name
+                spin._field_type = field_type
+                spin.valueChanged.connect(lambda v, fn=field_name, ft=field_type: 
+                    self._on_multi_field_changed(fn, ft, v))
+                form.addRow(field_name, spin)
+            elif field_type == InspectorFieldType.STRING:
+                line = QtWidgets.QLineEdit()
+                if all_same and values:
+                    line.setText(str(values[0]) if values[0] else "")
+                else:
+                    line.setText("-")
+                line._field_name = field_name
+                line._field_type = field_type
+                line.editingFinished.connect(lambda fn=field_name, ft=field_type, w=line: 
+                    self._on_multi_field_changed(fn, ft, w.text()))
+                form.addRow(field_name, line)
+            elif field_type == InspectorFieldType.COLOR:
+                # Show "-" for multi-selection colors (complex to merge)
+                label = QtWidgets.QLabel("-")
+                form.addRow(field_name, label)
+            else:
+                label = QtWidgets.QLabel("-")
+                form.addRow(field_name, label)
+        
+        return box
+    
+    def _on_multi_field_changed(self, field_name: str, field_type, value) -> None:
+        """Apply field change to all selected objects."""
+        objects = self._selection.game_objects
+        if not objects:
+            return
+        
+        self._viewport.makeCurrent()
+        
+        for obj in objects:
+            # Find matching component in each object
+            for comp in obj.components:
+                if hasattr(comp, field_name):
+                    try:
+                        # Convert value based on field type
+                        if field_type == InspectorFieldType.BOOL:
+                            if value == QtCore.Qt.CheckState.PartiallyChecked:
+                                continue  # Don't change on partial
+                            setattr(comp, field_name, value == QtCore.Qt.CheckState.Checked)
+                        elif field_type in (InspectorFieldType.FLOAT, InspectorFieldType.INT):
+                            if isinstance(value, str) and value == "-":
+                                continue
+                            setattr(comp, field_name, value)
+                        elif field_type == InspectorFieldType.STRING:
+                            if value == "-":
+                                continue
+                            setattr(comp, field_name, value)
+                    except Exception:
+                        pass
+                    break
+        
+        self._viewport.update()
+        self._viewport.doneCurrent()
+        self._mark_scene_dirty()
+    
+    def _refresh_component_box_multi(self, box, objects):
+        """Refresh a component box's field values for multi-selection."""
+        # Similar to single object but check for differences
+        pass  # Simplified: on change we update all, on refresh we skip for now
+    
+    def _create_directional_light_fields_multi(self, comp, objects):
+        return self._create_light_fields_multi_base(comp, objects, is_directional=True)
+    
+    def _create_point_light_fields_multi(self, comp, objects):
+        return self._create_light_fields_multi_base(comp, objects, is_point=True)
+    
+    def _create_light_fields_multi(self, comp, objects):
+        return self._create_light_fields_multi_base(comp, objects)
+    
+    def _create_light_fields_multi_base(self, comp, objects, is_directional=False, is_point=False):
+        """Create light fields for multi-selection."""
+        from src.engine3d.component import InspectorFieldType
+        box = QtWidgets.QGroupBox(comp.__class__.__name__, self._components_container)
+        main_layout = QtWidgets.QVBoxLayout(box)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        
+        layout = QtWidgets.QFormLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Intensity - compare across objects
+        intensities = []
+        for obj in objects:
+            for c in obj.components:
+                if type(c).__name__ == type(comp).__name__:
+                    intensities.append(float(getattr(c, 'intensity', 1.0)))
+                    break
+        intensity = self._make_spinbox(0.0, 1000.0, step=0.1, decimals=2)
+        if len(set(intensities)) == 1 and intensities:
+            intensity.setValue(intensities[0])
+        else:
+            intensity.setSpecialValueText("-")
+        intensity.valueChanged.connect(lambda v, fn='intensity', ft=InspectorFieldType.FLOAT: 
+            self._on_multi_field_changed(fn, ft, v))
+        layout.addRow("Intensity", intensity)
+        box._intensity_field = intensity
+        
+        # Color - show "-" for multi (complex to merge)
+        label = QtWidgets.QLabel("-")
+        layout.addRow("Color", label)
+        
+        main_layout.addLayout(layout)
+        
+        # Directional light: ambient
+        if is_directional:
+            ambients = []
+            for obj in objects:
+                for c in obj.components:
+                    if type(c).__name__ == type(comp).__name__:
+                        ambients.append(float(getattr(c, 'ambient', 0.0)))
+                        break
+            ambient = self._make_spinbox(0.0, 1.0, step=0.05, decimals=2)
+            if len(set(ambients)) == 1 and ambients:
+                ambient.setValue(ambients[0])
+            else:
+                ambient.setSpecialValueText("-")
+            ambient.valueChanged.connect(lambda v, fn='ambient', ft=InspectorFieldType.FLOAT:
+                self._on_multi_field_changed(fn, ft, v))
+            layout.addRow("Ambient", ambient)
+            box._ambient_field = ambient
+        
+        # Point light: range
+        if is_point:
+            ranges = []
+            for obj in objects:
+                for c in obj.components:
+                    if type(c).__name__ == type(comp).__name__:
+                        ranges.append(float(getattr(c, 'range', 10.0)))
+                        break
+            range_field = self._make_spinbox(0.1, 1000.0, step=0.5, decimals=2)
+            if len(set(ranges)) == 1 and ranges:
+                range_field.setValue(ranges[0])
+            else:
+                range_field.setSpecialValueText("-")
+            range_field.valueChanged.connect(lambda v, fn='range', ft=InspectorFieldType.FLOAT:
+                self._on_multi_field_changed(fn, ft, v))
+            layout.addRow("Range", range_field)
+            box._range_field = range_field
+        
+        # Add remove button
+        remove_btn = QtWidgets.QPushButton("Remove Component")
+        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        main_layout.addWidget(remove_btn)
+        
+        return box
+    
+    def _create_box_collider_fields_multi(self, comp, objects):
+        return self._create_collider_fields_multi_base(comp, objects, is_box=True)
+    
+    def _create_sphere_collider_fields_multi(self, comp, objects):
+        return self._create_collider_fields_multi_base(comp, objects, is_sphere=True)
+    
+    def _create_capsule_collider_fields_multi(self, comp, objects):
+        return self._create_collider_fields_multi_base(comp, objects, is_capsule=True)
+    
+    def _create_collider_fields_multi(self, comp, objects):
+        return self._create_collider_fields_multi_base(comp, objects)
+    
+    def _create_collider_fields_multi_base(self, comp, objects, is_box=False, is_sphere=False, is_capsule=False):
+        """Create collider fields for multi-selection."""
+        from src.engine3d.component import InspectorFieldType
+        box = QtWidgets.QGroupBox(comp.__class__.__name__, self._components_container)
+        main_layout = QtWidgets.QVBoxLayout(box)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        
+        layout = QtWidgets.QFormLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Center - show "-" for multi (Vector3 complex)
+        label = QtWidgets.QLabel("-")
+        layout.addRow("Center", label)
+        
+        # Box collider: size
+        if is_box:
+            size_label = QtWidgets.QLabel("-")
+            layout.addRow("Size", size_label)
+        
+        # Sphere collider: radius
+        if is_sphere:
+            radii = []
+            for obj in objects:
+                for c in obj.components:
+                    if type(c).__name__ == type(comp).__name__:
+                        radii.append(float(getattr(c, 'radius', 1.0)))
+                        break
+            radius = self._make_spinbox(0.01, 1000.0, step=0.1, decimals=2)
+            if len(set(radii)) == 1 and radii:
+                radius.setValue(radii[0])
+            else:
+                radius.setSpecialValueText("-")
+            radius.valueChanged.connect(lambda v, fn='radius', ft=InspectorFieldType.FLOAT:
+                self._on_multi_field_changed(fn, ft, v))
+            layout.addRow("Radius", radius)
+            box._radius_field = radius
+        
+        # Capsule collider: radius and height
+        if is_capsule:
+            radii = []
+            heights = []
+            for obj in objects:
+                for c in obj.components:
+                    if type(c).__name__ == type(comp).__name__:
+                        radii.append(float(getattr(c, 'radius', 1.0)))
+                        heights.append(float(getattr(c, 'height', 2.0)))
+                        break
+            radius = self._make_spinbox(0.01, 1000.0, step=0.1, decimals=2)
+            if len(set(radii)) == 1 and radii:
+                radius.setValue(radii[0])
+            else:
+                radius.setSpecialValueText("-")
+            radius.valueChanged.connect(lambda v, fn='radius', ft=InspectorFieldType.FLOAT:
+                self._on_multi_field_changed(fn, ft, v))
+            layout.addRow("Radius", radius)
+            box._radius_field = radius
+            
+            height = self._make_spinbox(0.01, 1000.0, step=0.1, decimals=2)
+            if len(set(heights)) == 1 and heights:
+                height.setValue(heights[0])
+            else:
+                height.setSpecialValueText("-")
+            height.valueChanged.connect(lambda v, fn='height', ft=InspectorFieldType.FLOAT:
+                self._on_multi_field_changed(fn, ft, v))
+            layout.addRow("Height", height)
+            box._height_field = height
+        
+        main_layout.addLayout(layout)
+        
+        # Add remove button
+        remove_btn = QtWidgets.QPushButton("Remove Component")
+        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        main_layout.addWidget(remove_btn)
+        
+        return box
+    
+    def _create_object3d_fields_multi(self, comp, objects):
+        return self._create_component_summary_multi(comp, objects)
+    
+    def _create_rigidbody_fields_multi(self, comp, objects):
+        """Create rigidbody fields for multi-selection."""
+        from src.engine3d.component import InspectorFieldType
+        box = QtWidgets.QGroupBox(comp.__class__.__name__, self._components_container)
+        main_layout = QtWidgets.QVBoxLayout(box)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        
+        layout = QtWidgets.QFormLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Use gravity
+        gravities = []
+        for obj in objects:
+            for c in obj.components:
+                if type(c).__name__ == type(comp).__name__:
+                    gravities.append(bool(getattr(c, 'use_gravity', True)))
+                    break
+        use_gravity = QtWidgets.QCheckBox()
+        use_gravity.setTristate(True)
+        if len(set(gravities)) == 1 and gravities:
+            use_gravity.setCheckState(QtCore.Qt.CheckState.Checked if gravities[0] else QtCore.Qt.CheckState.Unchecked)
+        else:
+            use_gravity.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
+        use_gravity.stateChanged.connect(lambda state, fn='use_gravity', ft=InspectorFieldType.BOOL:
+            self._on_multi_field_changed(fn, ft, state))
+        layout.addRow("Use Gravity", use_gravity)
+        
+        # Is kinematic
+        kinematics = []
+        for obj in objects:
+            for c in obj.components:
+                if type(c).__name__ == type(comp).__name__:
+                    kinematics.append(bool(getattr(c, 'is_kinematic', False)))
+                    break
+        is_kinematic = QtWidgets.QCheckBox()
+        is_kinematic.setTristate(True)
+        if len(set(kinematics)) == 1 and kinematics:
+            is_kinematic.setCheckState(QtCore.Qt.CheckState.Checked if kinematics[0] else QtCore.Qt.CheckState.Unchecked)
+        else:
+            is_kinematic.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
+        is_kinematic.stateChanged.connect(lambda state, fn='is_kinematic', ft=InspectorFieldType.BOOL:
+            self._on_multi_field_changed(fn, ft, state))
+        layout.addRow("Is Kinematic", is_kinematic)
+        
+        # Is static
+        statics = []
+        for obj in objects:
+            for c in obj.components:
+                if type(c).__name__ == type(comp).__name__:
+                    statics.append(bool(getattr(c, 'is_static', False)))
+                    break
+        is_static = QtWidgets.QCheckBox()
+        is_static.setTristate(True)
+        if len(set(statics)) == 1 and statics:
+            is_static.setCheckState(QtCore.Qt.CheckState.Checked if statics[0] else QtCore.Qt.CheckState.Unchecked)
+        else:
+            is_static.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
+        is_static.stateChanged.connect(lambda state, fn='is_static', ft=InspectorFieldType.BOOL:
+            self._on_multi_field_changed(fn, ft, state))
+        layout.addRow("Is Static", is_static)
+        
+        # Mass
+        masses = []
+        for obj in objects:
+            for c in obj.components:
+                if type(c).__name__ == type(comp).__name__:
+                    masses.append(float(getattr(c, 'mass', 1.0)))
+                    break
+        mass = self._make_spinbox(0.001, 10000.0, step=0.1, decimals=2)
+        if len(set(masses)) == 1 and masses:
+            mass.setValue(masses[0])
+        else:
+            mass.setSpecialValueText("-")
+        mass.valueChanged.connect(lambda v, fn='mass', ft=InspectorFieldType.FLOAT:
+            self._on_multi_field_changed(fn, ft, v))
+        layout.addRow("Mass", mass)
+        
+        # Drag
+        drags = []
+        for obj in objects:
+            for c in obj.components:
+                if type(c).__name__ == type(comp).__name__:
+                    drags.append(float(getattr(c, 'drag', 0.0)))
+                    break
+        drag = self._make_spinbox(0.0, 1000.0, step=0.1, decimals=2)
+        if len(set(drags)) == 1 and drags:
+            drag.setValue(drags[0])
+        else:
+            drag.setSpecialValueText("-")
+        drag.valueChanged.connect(lambda v, fn='drag', ft=InspectorFieldType.FLOAT:
+            self._on_multi_field_changed(fn, ft, v))
+        layout.addRow("Drag", drag)
+        
+        main_layout.addLayout(layout)
+        
+        # Add remove button
+        remove_btn = QtWidgets.QPushButton("Remove Component")
+        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        main_layout.addWidget(remove_btn)
+        
+        return box
+    
+    def _create_component_summary_multi(self, comp, objects):
+        """Create a summary box for multi-selection."""
+        box = QtWidgets.QGroupBox(comp.__class__.__name__, self._components_container)
+        layout = QtWidgets.QVBoxLayout(box)
+        label = QtWidgets.QLabel(f"{len(objects)} objects selected")
+        label.setStyleSheet("color: #888;")
+        layout.addWidget(label)
+        return box
+
     def _build_component_fields(self, obj: GameObject) -> None:
         from src.engine3d.light import Light3D, DirectionalLight3D, PointLight3D
         from src.physics.collider import Collider, BoxCollider, SphereCollider, CapsuleCollider
@@ -3977,7 +5576,11 @@ class {class_name}(Script):
             # Get inspector fields from the component
             inspector_fields = comp.get_inspector_fields()
             
-            if inspector_fields:
+            # Special case: ParticleSystem needs Play/Stop button
+            from src.engine3d.particle import ParticleSystem
+            if isinstance(comp, ParticleSystem):
+                box = self._create_particle_system_fields(comp, inspector_fields)
+            elif inspector_fields:
                 # Build fields dynamically using InspectorField metadata
                 box = self._create_inspector_fields_for_component(comp, inspector_fields)
             elif isinstance(comp, Light3D):
@@ -4048,6 +5651,200 @@ class {class_name}(Script):
         
         box._inspector_field_widgets = field_widgets
         return box
+
+    def _create_particle_system_fields(self, comp, inspector_fields: List) -> QtWidgets.QGroupBox:
+        """Create inspector UI for ParticleSystem with InspectorFields and Play/Stop button."""
+        from src.engine3d.particle import ParticleSystem
+        
+        box = QtWidgets.QGroupBox(comp.__class__.__name__, self._components_container)
+        main_layout = QtWidgets.QVBoxLayout(box)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        
+        # Create a form layout for the InspectorField fields
+        form_layout = QtWidgets.QFormLayout()
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Store field widgets for updating
+        field_widgets = {}
+        
+        for field_name, field_info in inspector_fields:
+            widget = self._create_widget_for_field(comp, field_name, field_info)
+            if widget:
+                form_layout.addRow(self._format_field_label(field_name), widget)
+                field_widgets[field_name] = widget
+        
+        main_layout.addLayout(form_layout)
+        
+        # Add Play/Stop button
+        play_btn = QtWidgets.QPushButton("▶ Play" if not comp.is_playing else "⏹ Stop", box)
+        play_btn.setStyleSheet("background-color: #28a745; color: white; font-weight: bold;" if comp.is_playing else "")
+        play_btn.clicked.connect(lambda checked, c=comp, b=play_btn: self._on_particle_system_play_stop(c, b))
+        main_layout.addWidget(play_btn)
+        box._play_btn = play_btn
+        
+        # Add remove button
+        remove_btn = QtWidgets.QPushButton("Remove Component", box)
+        if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
+            remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component_from_prefab(c))
+        else:
+            remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        main_layout.addWidget(remove_btn)
+        
+        box._inspector_field_widgets = field_widgets
+        return box
+    
+    def _on_particle_system_play_stop(self, comp, button) -> None:
+        """Toggle ParticleSystem play/stop from inspector button."""
+        if comp.is_playing:
+            comp.stop(clear_particles=True)
+            comp.play_in_editor = False  # Clear the editor auto-play flag
+            button.setText("▶ Play")
+            button.setStyleSheet("")
+        else:
+            # Restart the particle system (play() resets elapsed and emit timer)
+            comp.play()
+            comp.play_in_editor = True  # Set the editor auto-play flag for persistence
+            button.setText("⏹ Stop")
+            button.setStyleSheet("background-color: #28a745; color: white; font-weight: bold;")
+        self._viewport.update()
+        self._mark_scene_dirty()
+    
+    def _create_particle_system_fields_multi(self, comp, inspector_fields, objects) -> QtWidgets.QGroupBox:
+        """Create inspector UI for ParticleSystem in multi-selection with Play/Stop button."""
+        from src.engine3d.particle import ParticleSystem
+        
+        box = QtWidgets.QGroupBox(comp.__class__.__name__, self._components_container)
+        main_layout = QtWidgets.QVBoxLayout(box)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        
+        # Create a form layout for the InspectorField fields
+        form_layout = QtWidgets.QFormLayout()
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Build fields similar to _create_inspector_fields_for_component_multi
+        from src.engine3d.component import InspectorFieldType
+        
+        for field_name, field_info in inspector_fields:
+            field_type = field_info.field_type
+            default = field_info.default_value
+            
+            # Get values from all objects
+            values = []
+            for obj in objects:
+                for c in obj.components:
+                    if type(c).__name__ == type(comp).__name__:
+                        val = getattr(c, field_name, default)
+                        values.append(val)
+                        break
+            
+            all_same = len(set(str(v) for v in values)) == 1
+            
+            if field_type == InspectorFieldType.BOOL:
+                checkbox = QtWidgets.QCheckBox()
+                checkbox.setTristate(True)
+                if all_same and values:
+                    checkbox.setCheckState(QtCore.Qt.CheckState.Checked if values[0] else QtCore.Qt.CheckState.Unchecked)
+                else:
+                    checkbox.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
+                checkbox._field_name = field_name
+                checkbox._field_type = field_type
+                checkbox.stateChanged.connect(lambda state, fn=field_name, ft=field_type: 
+                    self._on_multi_field_changed(fn, ft, state))
+                form_layout.addRow(self._format_field_label(field_name), checkbox)
+            elif field_type == InspectorFieldType.FLOAT:
+                spin = NoWheelSpinBox()
+                spin.setRange(-10000, 10000)
+                spin.setDecimals(3)
+                if all_same and values:
+                    spin.setValue(values[0])
+                else:
+                    spin.setSpecialValueText("-")
+                spin._field_name = field_name
+                spin._field_type = field_type
+                spin.valueChanged.connect(lambda v, fn=field_name, ft=field_type: 
+                    self._on_multi_field_changed(fn, ft, v))
+                form_layout.addRow(self._format_field_label(field_name), spin)
+            elif field_type == InspectorFieldType.INT:
+                spin = NoWheelIntSpinBox()
+                spin.setRange(-10000, 10000)
+                if all_same and values:
+                    spin.setValue(values[0])
+                else:
+                    spin.setSpecialValueText("-")
+                spin._field_name = field_name
+                spin._field_type = field_type
+                spin.valueChanged.connect(lambda v, fn=field_name, ft=field_type: 
+                    self._on_multi_field_changed(fn, ft, v))
+                form_layout.addRow(self._format_field_label(field_name), spin)
+            elif field_type == InspectorFieldType.STRING:
+                line = QtWidgets.QLineEdit()
+                if all_same and values:
+                    line.setText(str(values[0]) if values[0] else "")
+                else:
+                    line.setText("-")
+                line._field_name = field_name
+                line._field_type = field_type
+                line.editingFinished.connect(lambda fn=field_name, ft=field_type, w=line: 
+                    self._on_multi_field_changed(fn, ft, w.text()))
+                form_layout.addRow(self._format_field_label(field_name), line)
+            elif field_type == InspectorFieldType.COLOR:
+                label = QtWidgets.QLabel("-")
+                form_layout.addRow(self._format_field_label(field_name), label)
+            else:
+                label = QtWidgets.QLabel("-")
+                form_layout.addRow(self._format_field_label(field_name), label)
+        
+        main_layout.addLayout(form_layout)
+        
+        # Add Play/Stop button for all selected particle systems
+        # Check if all are playing
+        all_playing = all(any(isinstance(c, ParticleSystem) and c.is_playing for c in obj.components) for obj in objects)
+        play_btn = QtWidgets.QPushButton("⏹ Stop All" if all_playing else "▶ Play All", box)
+        play_btn.setStyleSheet("background-color: #28a745; color: white; font-weight: bold;" if all_playing else "")
+        play_btn.clicked.connect(lambda checked, objs=objects, b=play_btn: self._on_particle_system_play_stop_multi(objs, b))
+        main_layout.addWidget(play_btn)
+        box._play_btn = play_btn
+        
+        # Add remove button
+        remove_btn = QtWidgets.QPushButton("Remove Component", box)
+        remove_btn.clicked.connect(lambda checked, c=comp: self._remove_component(c))
+        main_layout.addWidget(remove_btn)
+        
+        return box
+    
+    def _on_particle_system_play_stop_multi(self, objects, button) -> None:
+        """Toggle ParticleSystem play/stop for all selected objects."""
+        from src.engine3d.particle import ParticleSystem
+        
+        # Check if any are playing
+        any_playing = False
+        for obj in objects:
+            for comp in obj.components:
+                if isinstance(comp, ParticleSystem) and comp.is_playing:
+                    any_playing = True
+                    break
+        
+        # Toggle: if any playing, stop all; otherwise play all
+        for obj in objects:
+            for comp in obj.components:
+                if isinstance(comp, ParticleSystem):
+                    if any_playing:
+                        comp.stop(clear_particles=True)
+                        comp.play_in_editor = False  # Clear the editor auto-play flag
+                    else:
+                        comp.play()
+                        comp.play_in_editor = True  # Set the editor auto-play flag for persistence
+        
+        # Update button
+        if any_playing:
+            button.setText("▶ Play All")
+            button.setStyleSheet("")
+        else:
+            button.setText("⏹ Stop All")
+            button.setStyleSheet("background-color: #28a745; color: white; font-weight: bold;")
+        
+        self._viewport.update()
+        self._mark_scene_dirty()
 
     def _format_field_label(self, field_name: str) -> str:
         """Format a field name as a human-readable label."""

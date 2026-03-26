@@ -163,23 +163,56 @@ class Scene3D:
         return go
     
     def remove_object(self, obj: GameObject):
-        """Remove object from scene."""
-        if obj in self.objects:
-            if self.window:
-                if obj.get_component(Object3D):
-                    self.window._release_mesh(obj.get_component(Object3D))
-            else:
-                if obj.get_component(Object3D):
-                    obj.get_component(Object3D)._release_gpu()
-            
-            # Unregister cameras
-            for cam in obj.get_components(Camera3D):
-                if cam in self._cameras:
-                    self._cameras.remove(cam)
-                    if self._main_camera == cam:
-                        self._main_camera = self._cameras[0] if self._cameras else None
+        """Remove object from scene, including all its children recursively."""
+        if obj not in self.objects:
+            return
+        
+        # Collect all descendants (children, grandchildren, etc.) first
+        descendants = []
+        def collect_descendants(transform):
+            for child in transform.children:  # children is a property, not a method
+                if child.game_object in self.objects:
+                    descendants.append(child.game_object)
+                    collect_descendants(child)
+        
+        collect_descendants(obj.transform)
+        
+        # Remove all descendants first (bottom-up)
+        for descendant in descendants:
+            if descendant in self.objects:
+                # Release GPU resources
+                if self.window:
+                    if descendant.get_component(Object3D):
+                        self.window._release_mesh(descendant.get_component(Object3D))
+                else:
+                    if descendant.get_component(Object3D):
+                        descendant.get_component(Object3D)._release_gpu()
+                
+                # Unregister cameras
+                for cam in descendant.get_components(Camera3D):
+                    if cam in self._cameras:
+                        self._cameras.remove(cam)
+                        if self._main_camera == cam:
+                            self._main_camera = self._cameras[0] if self._cameras else None
+                
+                self.objects.remove(descendant)
+        
+        # Now remove the main object
+        if self.window:
+            if obj.get_component(Object3D):
+                self.window._release_mesh(obj.get_component(Object3D))
+        else:
+            if obj.get_component(Object3D):
+                obj.get_component(Object3D)._release_gpu()
+        
+        # Unregister cameras
+        for cam in obj.get_components(Camera3D):
+            if cam in self._cameras:
+                self._cameras.remove(cam)
+                if self._main_camera == cam:
+                    self._main_camera = self._cameras[0] if self._cameras else None
 
-            self.objects.remove(obj)
+        self.objects.remove(obj)
     
     def clear_objects(self):
         """Remove all objects from scene."""
@@ -346,6 +379,10 @@ class Scene3D:
         elif hasattr(cam_target, 'tolist'):
             cam_target = cam_target.tolist()
             
+        # Filter out internal particle system particles (they're managed by ParticleSystem)
+        visible_objects = [obj for obj in self.objects 
+                           if not getattr(obj, '_is_particle_system_particle', False)]
+        
         return {
             "camera": {
                 "position": cam_pos,
@@ -354,7 +391,7 @@ class Scene3D:
                 "near": self.camera.near,
                 "far": self.camera.far,
             },
-            "objects": [obj._to_prefab_dict() for obj in self.objects],
+            "objects": [obj._to_prefab_dict() for obj in visible_objects],
         }
 
     def clone(self) -> "Scene3D":

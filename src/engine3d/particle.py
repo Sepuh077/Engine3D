@@ -9,10 +9,10 @@ import random
 
 import numpy as np
 
-from src.types import ColorType, Vector3
+from src.types import Color, ColorType, Vector3
 from .gameobject import GameObject
 from .object3d import create_cube, Object3D
-from .component import Component, Time
+from .component import Component, Time, InspectorField
 
 
 ParticleObject = Union[str, GameObject, Callable[[], GameObject]]
@@ -208,6 +208,18 @@ def linear_velocity_over_lifetime(start: float, end: float) -> LifetimeVelocity:
 
 class ParticleSystem(Component):
     """Unity-style particle system with pooled GameObject particles."""
+    
+    # Inspector fields for editable properties
+    play_on_awake = InspectorField(bool, default=True, tooltip="Play automatically when scene starts")
+    is_local = InspectorField(bool, default=True, tooltip="Emit in local space relative to the GameObject")
+    play_duration = InspectorField(float, default=0.0, min_value=0.0, max_value=60.0, tooltip="Duration in seconds (0 = infinite)")
+    particle_life = InspectorField(float, default=1.0, min_value=0.01, max_value=30.0, tooltip="Lifetime of each particle in seconds")
+    speed = InspectorField(float, default=3.0, min_value=0.0, max_value=100.0, tooltip="Initial speed of particles")
+    size = InspectorField(float, default=1.0, min_value=0.01, max_value=10.0, tooltip="Size of each particle")
+    color = InspectorField(Color, default=(1.0, 1.0, 1.0), tooltip="Color of particles")
+    loop = InspectorField(bool, default=True, tooltip="Loop the particle system")
+    max_particles = InspectorField(int, default=100, min_value=1, max_value=1000, tooltip="Maximum number of particles")
+    gravity_scale = InspectorField(float, default=1.0, min_value=-10.0, max_value=10.0, tooltip="Gravity multiplier (0 = no gravity)")
 
     def __init__(
         self,
@@ -256,6 +268,9 @@ class ParticleSystem(Component):
         self._elapsed = 0.0
         self._emit_timer = 0.0
         self._rng = random.Random()
+        # Flag to indicate this particle system should auto-play in the editor (for testing)
+        # This is serialized and persists across editor restarts
+        self.play_in_editor = False
 
     @property
     def position(self) -> Vector3:
@@ -276,6 +291,9 @@ class ParticleSystem(Component):
         self._build_pool()
         if self.play_on_awake:
             self.play()
+        # Also auto-play in editor if play_in_editor is set (for testing)
+        elif self.play_in_editor:
+            self.play()
 
     def _build_pool(self) -> None:
         if self._container is None:
@@ -286,6 +304,8 @@ class ParticleSystem(Component):
         for _ in range(self.max_particles):
             obj = self._create_particle_object()
             obj.get_component(Object3D).visible = False
+            # Mark as internal particle object (hide from hierarchy)
+            obj._is_particle_system_particle = True
             if self.collider is not None:
                 self._attach_collider(obj)
             self._container.add_object(obj)
@@ -389,12 +409,14 @@ class ParticleSystem(Component):
 
             if self._playing:
                 self._emit_timer += delta_time
-                interval = max(self.burst.interval, 1e-6)
+                # Defensive check: ensure burst is a ParticleBurst object
+                burst = self.burst if isinstance(self.burst, ParticleBurst) else ParticleBurst()
+                interval = max(burst.interval, 1e-6)
                 while self._emit_timer >= interval:
                     self._emit_timer -= interval
-                    count = self.burst.count
-                    if self.burst.randomize:
-                        count = self._rng.randint(0, max(self.burst.count, 0))
+                    count = burst.count
+                    if burst.randomize:
+                        count = self._rng.randint(0, max(burst.count, 0))
                     self.emit(count)
 
         gravity = Vector3(0.0, -9.81, 0.0) * self.gravity_scale
@@ -448,7 +470,9 @@ class ParticleSystem(Component):
         particle.age = 0.0
         particle.life = self.particle_life
 
-        spawn_pos, spawn_dir = self.shape.get_spawn_pos_and_dir(self._position, self._rng)
+        # Defensive check: ensure shape is a ParticleShape object
+        shape = self.shape if isinstance(self.shape, ParticleShape) else SphereShape()
+        spawn_pos, spawn_dir = shape.get_spawn_pos_and_dir(self._position, self._rng)
         particle.velocity = spawn_dir * self.speed
 
         particle.obj.get_component(Object3D).visible = True
