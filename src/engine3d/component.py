@@ -104,6 +104,89 @@ Tag.create("UI")
 Tag.create("Camera")
 
 
+def serializable(cls: type = None, *, name: Optional[str] = None) -> type:
+    """
+    Decorator to mark a class as serializable for use in InspectorField.
+    
+    Classes decorated with @serializable can be used as types in InspectorField,
+    and their InspectorField members will be shown as nested/expandable fields
+    in the inspector.
+    
+    Example:
+        @serializable
+        class WeaponStats:
+            damage = InspectorField(float, default=10.0)
+            attack_speed = InspectorField(float, default=1.0)
+        
+        class MyScript(Script):
+            weapon = InspectorField(WeaponStats, default=None)
+            # In the inspector, 'weapon' will show 'damage' and 'attack_speed' as sub-fields
+    
+    Args:
+        cls: The class to decorate (when used without parentheses)
+        name: Optional custom name for the serializable type (defaults to class name)
+    
+    Returns:
+        The decorated class with __serializable__ marker and helper methods
+    """
+    def decorator(cls: type) -> type:
+        # Mark the class as serializable
+        cls.__serializable__ = True
+        cls.__serializable_name__ = name or cls.__name__
+        
+        # Add get_inspector_fields method if not already present
+        if not hasattr(cls, 'get_inspector_fields'):
+            @classmethod
+            def get_inspector_fields(cls_inner: type) -> List[Tuple[str, InspectorFieldInfo]]:
+                """
+                Get all inspector fields defined on this serializable class.
+                
+                Returns a list of (field_name, InspectorFieldInfo) tuples.
+                """
+                fields = []
+                seen = set()
+                
+                # Walk through the MRO to get inherited fields
+                for klass in reversed(cls_inner.__mro__):
+                    for attr_name, value in vars(klass).items():
+                        if attr_name in seen:
+                            continue
+                        if isinstance(value, InspectorField):
+                            fields.append((attr_name, value.get_info()))
+                            seen.add(attr_name)
+                
+                return fields
+            
+            cls.get_inspector_fields = get_inspector_fields
+        
+        # Add get_inspector_field_value and set_inspector_field_value if not present
+        if not hasattr(cls, 'get_inspector_field_value'):
+            def get_inspector_field_value(self, field_name: str) -> Any:
+                """Get the value of an inspector field."""
+                descriptor = getattr(type(self), field_name, None)
+                if isinstance(descriptor, InspectorField):
+                    return getattr(self, field_name)
+                return None
+            
+            cls.get_inspector_field_value = get_inspector_field_value
+        
+        if not hasattr(cls, 'set_inspector_field_value'):
+            def set_inspector_field_value(self, field_name: str, value: Any) -> None:
+                """Set the value of an inspector field."""
+                descriptor = getattr(type(self), field_name, None)
+                if isinstance(descriptor, InspectorField):
+                    setattr(self, field_name, value)
+            
+            cls.set_inspector_field_value = set_inspector_field_value
+        
+        return cls
+    
+    # Handle both @serializable and @serializable() usage
+    if cls is not None:
+        return decorator(cls)
+    return decorator
+
+
 class InspectorFieldType(Enum):
     """Types of inspector fields supported."""
     FLOAT = "float"
@@ -118,6 +201,7 @@ class InspectorFieldType(Enum):
     GAMEOBJECT_REF = "gameobject_ref"
     MATERIAL_REF = "material_ref"
     SCRIPTABLE_OBJECT_REF = "scriptable_object_ref"
+    SERIALIZABLE = "serializable"
 
 
 @dataclass
@@ -137,6 +221,7 @@ class InspectorFieldInfo:
         tooltip: Optional tooltip text
         list_item_type: The type of items in a list field (for LIST type)
         scriptable_object_type: The ScriptableObject subclass type (for SCRIPTABLE_OBJECT_REF type)
+        serializable_type: The serializable class type (for SERIALIZABLE type)
     """
     name: str
     field_type: InspectorFieldType
@@ -149,6 +234,7 @@ class InspectorFieldInfo:
     tooltip: Optional[str] = None
     list_item_type: Optional[Union[type, InspectorFieldType]] = None
     scriptable_object_type: Optional[type] = None
+    serializable_type: Optional[type] = None
 
 
 class InspectorField(Generic[_T]):
@@ -263,17 +349,22 @@ class InspectorField(Generic[_T]):
                 # Store the original component type for reference
                 self._original_field_type = field_type
             else:
-                # Check if it's a ScriptableObject subclass
-                # Use string comparison to avoid circular import
-                try:
-                    from .scriptable_object import ScriptableObject
-                    if issubclass(field_type, ScriptableObject):
-                        self.field_type = InspectorFieldType.SCRIPTABLE_OBJECT_REF
-                        self._original_field_type = field_type
-                    else:
+                # Check if it's a serializable class (marked with @serializable decorator)
+                if hasattr(field_type, '__serializable__') and field_type.__serializable__:
+                    self.field_type = InspectorFieldType.SERIALIZABLE
+                    self._original_field_type = field_type
+                else:
+                    # Check if it's a ScriptableObject subclass
+                    # Use string comparison to avoid circular import
+                    try:
+                        from .scriptable_object import ScriptableObject
+                        if issubclass(field_type, ScriptableObject):
+                            self.field_type = InspectorFieldType.SCRIPTABLE_OBJECT_REF
+                            self._original_field_type = field_type
+                        else:
+                            raise ValueError(f"Unsupported field type: {field_type}")
+                    except ImportError:
                         raise ValueError(f"Unsupported field type: {field_type}")
-                except ImportError:
-                    raise ValueError(f"Unsupported field type: {field_type}")
         elif isinstance(field_type, str):
             # String type name for deferred/lazy resolution (e.g., "SkyboxMaterial")
             # Store for editor to resolve later
@@ -332,6 +423,10 @@ class InspectorField(Generic[_T]):
             return None  # No material reference by default
         elif self.field_type == InspectorFieldType.SCRIPTABLE_OBJECT_REF:
             return None  # No ScriptableObject reference by default
+        elif self.field_type == InspectorFieldType.SERIALIZABLE:
+            # For serializable types, return None by default (user creates instance)
+            # The editor will create an instance when needed
+            return None
         return None
     
     def __set_name__(self, owner: type, name: str):
@@ -373,6 +468,7 @@ class InspectorField(Generic[_T]):
             tooltip=self.tooltip,
             list_item_type=self.list_item_type,
             scriptable_object_type=self._original_field_type if self.field_type == InspectorFieldType.SCRIPTABLE_OBJECT_REF else None,
+            serializable_type=self._original_field_type if self.field_type == InspectorFieldType.SERIALIZABLE else None,
         )
     
     @property
@@ -384,6 +480,13 @@ class InspectorField(Generic[_T]):
     def scriptable_object_type(self) -> Optional[type]:
         """Get the ScriptableObject type for SCRIPTABLE_OBJECT_REF fields."""
         if self.field_type == InspectorFieldType.SCRIPTABLE_OBJECT_REF:
+            return self._original_field_type
+        return None
+    
+    @property
+    def serializable_type(self) -> Optional[type]:
+        """Get the serializable type for SERIALIZABLE fields."""
+        if self.field_type == InspectorFieldType.SERIALIZABLE:
             return self._original_field_type
         return None
 

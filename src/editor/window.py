@@ -5481,6 +5481,13 @@ class {class_name}(Script):
                 # Create vector3 widget with x, y, z spinboxes for multi-selection
                 vector_widget = self._create_vector3_field_multi(values, field_name, field_type, field_info, objects, type(comp).__name__)
                 form.addRow(field_name, vector_widget)
+            elif field_type == InspectorFieldType.SERIALIZABLE:
+                # For serializable types in multi-selection, show type info
+                serializable_type = field_info.serializable_type
+                type_name = serializable_type.__name__ if serializable_type else "Unknown"
+                label = QtWidgets.QLabel(f"[{type_name}] (multi-select)")
+                label.setStyleSheet("color: #888; font-style: italic;")
+                form.addRow(field_name, label)
             else:
                 label = QtWidgets.QLabel("-")
                 form.addRow(field_name, label)
@@ -5659,7 +5666,7 @@ class {class_name}(Script):
         return widget
 
     def _create_color_field_multi(self, values, field_name, field_type, objects, component_class_name=None):
-        """Create a color editor widget for multi-selection with '-' for differing values.
+        """Create a color picker button for multi-selection.
         
         Args:
             values: List of color values from selected objects
@@ -5669,84 +5676,56 @@ class {class_name}(Script):
             component_class_name: Optional class name of the component type for proper matching
         """
         widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
+        layout = QtWidgets.QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(4)
         
-        # Store component class name for proper matching
         widget._component_class_name = component_class_name
         
-        rows = []
+        # Compute initial color: use first value if all same, else default
+        r, g, b = 255, 255, 255  # default white
+        if values:
+            # Check if all values are the same
+            first = None
+            all_same = True
+            for v in values:
+                if v is not None and len(v) >= 3:
+                    color = np.array(v[:3], dtype=np.float32)
+                    if color.max() <= 1.0:
+                        color = (color * 255.0).astype(int)
+                    else:
+                        color = color.astype(int)
+                    color = np.clip(color, 0, 255)
+                    if first is None:
+                        first = tuple(color)
+                    elif tuple(color) != first:
+                        all_same = False
+                        break
+            if all_same and first:
+                r, g, b = first
         
-        # Extract R, G, B values from each object's color
-        r_values = []
-        g_values = []
-        b_values = []
-        for v in values:
-            if v is not None and len(v) >= 3:
-                # Handle both 0-1 and 0-255 ranges
-                color = np.array(v[:3], dtype=np.float32)
-                if color.max() <= 1.0:
-                    color = (color * 255.0).astype(int)
-                else:
-                    color = color.astype(int)
-                color = np.clip(color, 0, 255)
-                r_values.append(int(color[0]))
-                g_values.append(int(color[1]))
-                b_values.append(int(color[2]))
+        color_btn = QtWidgets.QPushButton()
+        color_btn.setFixedWidth(60)
+        color_btn.setFixedHeight(22)
+        color_btn.setToolTip("Click to pick a color")
+        color_btn.setStyleSheet(f"background-color: rgb({r}, {g}, {b}); border: 1px solid #555;")
         
-        # Helper to check if all values are the same
-        def all_same(vals):
-            if not vals:
-                return True
-            first = vals[0]
-            return all(v == first for v in vals)
+        def pick_color():
+            initial = QtGui.QColor.fromRgb(r, g, b)
+            new_color = QtWidgets.QColorDialog.getColor(initial, widget, f"Choose {field_name}")
+            if new_color.isValid():
+                color_btn.setStyleSheet(f"background-color: rgb({new_color.red()}, {new_color.green()}, {new_color.blue()}); border: 1px solid #555;")
+                new_value = (new_color.redF(), new_color.greenF(), new_color.blueF())
+                # Apply to all selected objects
+                for obj in objects:
+                    for comp in obj.components:
+                        if hasattr(comp, field_name):
+                            comp.set_inspector_field_value(field_name, new_value)
+                self._mark_scene_dirty()
         
-        for label, comp_values in [("R", r_values), ("G", g_values), ("B", b_values)]:
-            # Create slider row manually to support "-" display
-            row_widget = QtWidgets.QWidget()
-            row_layout = QtWidgets.QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            
-            lbl = QtWidgets.QLabel(label)
-            lbl.setFixedWidth(12)
-            slider = NoWheelSlider(QtCore.Qt.Orientation.Horizontal)
-            slider.setRange(0, 255)
-            
-            if all_same(comp_values) and comp_values:
-                slider.setValue(comp_values[0])
-            else:
-                # Use a special value to indicate mixed; show "-" in label
-                slider.setValue(128)  # Default value, will show "-" in label
-                slider._multi_value = True
-            
-            slider._multi_value = not (all_same(comp_values) and comp_values)
-            
-            value_label = QtWidgets.QLabel("-" if slider._multi_value else str(slider.value()))
-            value_label.setFixedWidth(32)
-            
-            def make_slider_changed_handler(fn, w, vl, s):
-                def handler(val):
-                    # Update the value label - show the actual value now
-                    vl.setText(str(val))
-                    # Clear multi_value flag since user is setting a value
-                    s._multi_value = False
-                    # Call the multi-field change handler
-                    self._on_multi_color_field_changed(fn, field_type, w)
-                return handler
-            
-            slider.valueChanged.connect(make_slider_changed_handler(field_name, widget, value_label, slider))
-            row_layout.addWidget(lbl)
-            row_layout.addWidget(slider)
-            row_layout.addWidget(value_label)
-            
-            slider._component_class_name = component_class_name
-            row_widget._color_slider = slider
-            row_widget._value_label = value_label
-            rows.append(row_widget)
-            layout.addWidget(row_widget)
+        color_btn.clicked.connect(pick_color)
+        layout.addWidget(color_btn)
         
-        widget._color_rows = rows
         return widget
 
     def _on_multi_vector3_field_changed(self, field_name: str, field_type, widget: QtWidgets.QWidget) -> None:
@@ -6193,7 +6172,11 @@ class {class_name}(Script):
         for field_name, field_info in inspector_fields:
             widget = self._create_widget_for_field(comp, field_name, field_info)
             if widget:
-                form_layout.addRow(self._format_field_label(field_name), widget)
+                # For GroupBox (serializable) widgets, don't add label - name is in the title
+                if isinstance(widget, QtWidgets.QGroupBox):
+                    form_layout.addRow(widget)
+                else:
+                    form_layout.addRow(self._format_field_label(field_name), widget)
                 field_widgets[field_name] = widget
         
         main_layout.addLayout(form_layout)
@@ -6227,7 +6210,11 @@ class {class_name}(Script):
         for field_name, field_info in inspector_fields:
             widget = self._create_widget_for_field(comp, field_name, field_info)
             if widget:
-                form_layout.addRow(self._format_field_label(field_name), widget)
+                # For GroupBox (serializable) widgets, don't add label - name is in the title
+                if isinstance(widget, QtWidgets.QGroupBox):
+                    form_layout.addRow(widget)
+                else:
+                    form_layout.addRow(self._format_field_label(field_name), widget)
                 field_widgets[field_name] = widget
         
         main_layout.addLayout(form_layout)
@@ -6428,8 +6415,20 @@ class {class_name}(Script):
         self._viewport.update()
         self._mark_scene_dirty()
 
-    def _format_field_label(self, field_name: str) -> str:
-        """Format a field name as a human-readable label."""
+    def _format_field_label(self, field_name: str, field_info=None) -> str:
+        """Format a field name as a human-readable label.
+        
+        Args:
+            field_name: The raw field name (e.g., 'player_name')
+            field_info: Optional InspectorFieldInfo - if it has a tooltip, use that
+            
+        Returns:
+            Human-readable label: tooltip if available, else formatted name
+        """
+        # If field_info has a tooltip, use that as the display name
+        if field_info is not None and field_info.tooltip:
+            return field_info.tooltip
+        
         # Convert snake_case to Title Case
         words = field_name.replace('_', ' ').split()
         return ' '.join(word.capitalize() for word in words)
@@ -6472,6 +6471,8 @@ class {class_name}(Script):
             return self._create_material_ref_field(comp, field_name, field_info, current_value)
         elif field_info.field_type == InspectorFieldType.SCRIPTABLE_OBJECT_REF:
             return self._create_scriptable_object_ref_field(comp, field_name, field_info, current_value)
+        elif field_info.field_type == InspectorFieldType.SERIALIZABLE:
+            return self._create_serializable_field(comp, field_name, field_info, current_value)
         else:
             # Fallback: just show a label
             label = QtWidgets.QLabel(str(current_value))
@@ -6538,7 +6539,7 @@ class {class_name}(Script):
         return line_edit
 
     def _create_color_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QWidget:
-        """Create a color editor widget for a color field."""
+        """Create a color picker button for a color field."""
         color = np.array(current_value if current_value is not None else field_info.default_value, dtype=np.float32)
         if color.max() <= 1.0:
             color = (color * 255.0).astype(int)
@@ -6547,20 +6548,31 @@ class {class_name}(Script):
         color = np.clip(color, 0, 255)
 
         widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
+        layout = QtWidgets.QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(4)
 
-        rows = []
-        for label, idx in (("R", 0), ("G", 1), ("B", 2)):
-            row = self._make_color_slider(label, int(color[idx]) if idx < len(color) else 128, 
-                                          lambda value, c=comp, fn=field_name, w=widget: self._on_color_field_changed(c, fn, w))
-            layout.addWidget(row)
-            rows.append(row)
-        widget._color_rows = rows
+        color_btn = QtWidgets.QPushButton()
+        color_btn.setFixedWidth(60)
+        color_btn.setFixedHeight(22)
+        color_btn.setToolTip("Click to pick a color")
+        
+        r, g, b = int(color[0]), int(color[1]), int(color[2])
+        color_btn.setStyleSheet(f"background-color: rgb({r}, {g}, {b}); border: 1px solid #555;")
+        
+        def pick_color():
+            initial = QtGui.QColor.fromRgb(r, g, b)
+            new_color = QtWidgets.QColorDialog.getColor(initial, widget, f"Choose {field_name}")
+            if new_color.isValid():
+                color_btn.setStyleSheet(f"background-color: rgb({new_color.red()}, {new_color.green()}, {new_color.blue()}); border: 1px solid #555;")
+                new_value = (new_color.redF(), new_color.greenF(), new_color.blueF())
+                self._on_color_field_changed(comp, field_name, None, new_value)
+        
+        color_btn.clicked.connect(pick_color)
+        layout.addWidget(color_btn)
         
         if field_info.tooltip:
-            widget.setToolTip(field_info.tooltip)
+            color_btn.setToolTip(field_info.tooltip)
         
         return widget
 
@@ -7073,6 +7085,319 @@ class {class_name}(Script):
         
         return container
 
+    def _create_serializable_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QWidget:
+        """
+        Create a nested/expandable widget for a serializable type.
+        
+        Shows all InspectorFields of the serializable class as sub-fields
+        that can be edited inline.
+        
+        Args:
+            comp: The component containing this field
+            field_name: Name of the field
+            field_info: InspectorFieldInfo for this field
+            current_value: Current value of the field (a serializable instance or None)
+        
+        Returns:
+            A widget containing all the nested fields
+        """
+        from src.engine3d.component import InspectorFieldType
+        
+        # Get the serializable type
+        descriptor = getattr(type(comp), field_name, None)
+        serializable_type = descriptor.serializable_type if descriptor else field_info.serializable_type
+        
+        if serializable_type is None:
+            # Fallback: just show a label
+            return QtWidgets.QLabel("(No serializable type)")
+        
+        # Create a group box to contain the nested fields
+        # Use tooltip if available, else formatted field name
+        group_title = self._format_field_label(field_name, field_info)
+        group = QtWidgets.QGroupBox(group_title)
+        group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #555;
+                border-radius: 4px;
+                margin-top: 6px;
+                padding-top: 6px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 7px;
+                padding: 0 3px;
+            }
+        """)
+        
+        layout = QtWidgets.QFormLayout(group)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(4)
+        
+        # Get all inspector fields of the serializable type
+        serializable_fields = serializable_type.get_inspector_fields() if hasattr(serializable_type, 'get_inspector_fields') else []
+        
+        # Ensure current_value is an instance of the serializable type
+        if current_value is None or not isinstance(current_value, serializable_type):
+            # Create a new instance
+            try:
+                current_value = serializable_type()
+                # Set it on the component
+                comp.set_inspector_field_value(field_name, current_value)
+            except Exception:
+                # If we can't create an instance, just show a label
+                label = QtWidgets.QLabel(f"(Unable to create {serializable_type.__name__})")
+                return label
+        
+        # Create widgets for each sub-field
+        for sub_field_name, sub_field_info in serializable_fields:
+            sub_current_value = current_value.get_inspector_field_value(sub_field_name)
+            sub_widget = self._create_field_widget_for_value(
+                current_value, sub_field_name, sub_field_info, sub_current_value,
+                parent_component=comp, parent_field_name=field_name
+            )
+            if sub_widget:
+                # Set tooltip on the widget if the field has one
+                if sub_field_info.tooltip:
+                    sub_widget.setToolTip(sub_field_info.tooltip)
+                
+                # Get display label: tooltip if available, else formatted name
+                display_label = self._format_field_label(sub_field_name, sub_field_info)
+                
+                # If widget is a GroupBox, it already shows its title - no need for left label
+                if isinstance(sub_widget, QtWidgets.QGroupBox):
+                    layout.addRow(sub_widget)
+                else:
+                    layout.addRow(display_label, sub_widget)
+        
+        if field_info.tooltip:
+            group.setToolTip(field_info.tooltip)
+        
+        return group
+    
+    def _create_field_widget_for_value(self, target_obj, field_name: str, field_info, current_value,
+                                        parent_component=None, parent_field_name=None) -> QtWidgets.QWidget:
+        """
+        Create a widget for a field value, handling the change callback to update the nested object.
+        
+        This is used for serializable nested fields where changes need to propagate to the parent.
+        
+        Args:
+            target_obj: The object containing this field (could be a serializable instance)
+            field_name: Name of the field
+            field_info: InspectorFieldInfo for this field
+            current_value: Current value of the field
+            parent_component: Optional parent component (for dirty marking)
+            parent_field_name: Optional parent field name (for context)
+        
+        Returns:
+            A widget for editing this field
+        """
+        from src.engine3d.component import InspectorFieldType
+        
+        field_type = field_info.field_type
+        
+        # Helper to handle changes for nested fields
+        def on_nested_change(val):
+            target_obj.set_inspector_field_value(field_name, val)
+            if parent_component:
+                self._mark_scene_dirty()
+        
+        if field_type == InspectorFieldType.FLOAT:
+            spinbox = NoWheelSpinBox()
+            min_val = field_info.min_value if field_info.min_value is not None else -10000.0
+            max_val = field_info.max_value if field_info.max_value is not None else 10000.0
+            step = field_info.step if field_info.step is not None else 0.1
+            decimals = field_info.decimals if field_info.decimals is not None else 2
+            spinbox.setRange(min_val, max_val)
+            spinbox.setSingleStep(step)
+            spinbox.setDecimals(decimals)
+            spinbox.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+            spinbox.setValue(float(current_value) if current_value is not None else field_info.default_value)
+            spinbox.valueChanged.connect(on_nested_change)
+            return spinbox
+        
+        elif field_type == InspectorFieldType.INT:
+            spinbox = NoWheelIntSpinBox()
+            min_val = int(field_info.min_value) if field_info.min_value is not None else -10000
+            max_val = int(field_info.max_value) if field_info.max_value is not None else 10000
+            step = int(field_info.step) if field_info.step is not None else 1
+            spinbox.setRange(min_val, max_val)
+            spinbox.setSingleStep(step)
+            spinbox.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+            spinbox.setValue(int(current_value) if current_value is not None else field_info.default_value)
+            spinbox.valueChanged.connect(on_nested_change)
+            return spinbox
+        
+        elif field_type == InspectorFieldType.BOOL:
+            checkbox = QtWidgets.QCheckBox()
+            checkbox.setChecked(bool(current_value) if current_value is not None else field_info.default_value)
+            checkbox.toggled.connect(on_nested_change)
+            return checkbox
+        
+        elif field_type == InspectorFieldType.STRING:
+            line_edit = QtWidgets.QLineEdit()
+            line_edit.setText(str(current_value) if current_value is not None else str(field_info.default_value))
+            line_edit.editingFinished.connect(lambda le=line_edit: on_nested_change(le.text()))
+            return line_edit
+        
+        elif field_type == InspectorFieldType.COLOR:
+            # Create a simple color picker button (no sliders)
+            color = np.array(current_value if current_value is not None else field_info.default_value, dtype=np.float32)
+            if color.max() <= 1.0:
+                color = (color * 255.0).astype(int)
+            else:
+                color = np.array(color).astype(int)
+            color = np.clip(color, 0, 255)
+
+            widget = QtWidgets.QWidget()
+            layout = QtWidgets.QHBoxLayout(widget)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(4)
+
+            color_btn = QtWidgets.QPushButton()
+            color_btn.setFixedWidth(60)
+            color_btn.setFixedHeight(22)
+            color_btn.setToolTip("Click to pick a color")
+            
+            r, g, b = int(color[0]), int(color[1]), int(color[2])
+            color_btn.setStyleSheet(f"background-color: rgb({r}, {g}, {b}); border: 1px solid #555;")
+            
+            def pick_color():
+                initial = QtGui.QColor.fromRgb(r, g, b)
+                new_color = QtWidgets.QColorDialog.getColor(initial, widget, "Choose Color")
+                if new_color.isValid():
+                    color_btn.setStyleSheet(f"background-color: rgb({new_color.red()}, {new_color.green()}, {new_color.blue()}); border: 1px solid #555;")
+                    on_nested_change((new_color.redF(), new_color.greenF(), new_color.blueF()))
+            
+            color_btn.clicked.connect(pick_color)
+            layout.addWidget(color_btn)
+            
+            return widget
+        
+        elif field_type == InspectorFieldType.VECTOR3:
+            widget = QtWidgets.QWidget()
+            layout = QtWidgets.QHBoxLayout(widget)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(4)
+            
+            vec = current_value if current_value is not None else field_info.default_value
+            if vec is None:
+                vec = (0.0, 0.0, 0.0)
+            
+            fields = []
+            for i, label in enumerate(["X", "Y", "Z"]):
+                # Create label outside the input (not as prefix)
+                axis_label = QtWidgets.QLabel(f"{label}:")
+                axis_label.setFixedWidth(12)
+                spinbox = NoWheelSpinBox()
+                spinbox.setRange(-10000.0, 10000.0)
+                spinbox.setSingleStep(0.1)
+                spinbox.setDecimals(2)
+                spinbox.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+                spinbox.setValue(float(vec[i]) if i < len(vec) else 0.0)
+                # No prefix - label is outside
+                fields.append(spinbox)
+                layout.addWidget(axis_label)
+                layout.addWidget(spinbox)
+            
+            def on_vec_change():
+                new_val = (fields[0].value(), fields[1].value(), fields[2].value())
+                on_nested_change(new_val)
+            
+            for f in fields:
+                f.valueChanged.connect(lambda v, fn=on_vec_change: fn())
+            
+            return widget
+        
+        elif field_type == InspectorFieldType.ENUM:
+            combo = QtWidgets.QComboBox()
+            current_index = 0
+            for i, (val, label) in enumerate(field_info.enum_options or []):
+                combo.addItem(label, val)
+                if current_value is not None and val == current_value:
+                    current_index = i
+            combo.setCurrentIndex(current_index)
+            combo.currentDataChanged.connect(on_nested_change)
+            return combo
+        
+        elif field_type == InspectorFieldType.LIST:
+            # For lists, show a simple representation (can be enhanced later)
+            label = QtWidgets.QLabel(f"[List: {len(current_value) if current_value else 0} items]")
+            return label
+        
+        elif field_type == InspectorFieldType.SERIALIZABLE:
+            # Handle nested serializable types - recursively create nested fields
+            serializable_type = field_info.serializable_type
+            if serializable_type is None:
+                return QtWidgets.QLabel("(No serializable type)")
+            
+            # Create a group box to contain the nested fields
+            # Use tooltip if available, else formatted field name
+            group_title = self._format_field_label(field_name, field_info)
+            group = QtWidgets.QGroupBox(group_title)
+            group.setStyleSheet("""
+                QGroupBox {
+                    font-weight: bold;
+                    border: 1px solid #555;
+                    border-radius: 4px;
+                    margin-top: 6px;
+                    padding-top: 6px;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 7px;
+                    padding: 0 3px;
+                    font-size: 11px;
+                }
+            """)
+            
+            layout = QtWidgets.QFormLayout(group)
+            layout.setContentsMargins(6, 3, 6, 3)
+            layout.setSpacing(2)
+            
+            # Get all inspector fields of the serializable type
+            serializable_fields = serializable_type.get_inspector_fields() if hasattr(serializable_type, 'get_inspector_fields') else []
+            
+            # Ensure current_value is an instance of the serializable type
+            if current_value is None or not isinstance(current_value, serializable_type):
+                try:
+                    current_value = serializable_type()
+                    # Set it on the target object
+                    target_obj.set_inspector_field_value(field_name, current_value)
+                except Exception:
+                    return QtWidgets.QLabel(f"(Unable to create {serializable_type.__name__})")
+            
+            # Create widgets for each sub-field (recursively handles nested serializable)
+            for sub_field_name, sub_field_info in serializable_fields:
+                sub_current_value = current_value.get_inspector_field_value(sub_field_name)
+                sub_widget = self._create_field_widget_for_value(
+                    current_value, sub_field_name, sub_field_info, sub_current_value,
+                    parent_component=parent_component, parent_field_name=parent_field_name
+                )
+                if sub_widget:
+                    # Set tooltip on the widget if the field has one
+                    if sub_field_info.tooltip:
+                        sub_widget.setToolTip(sub_field_info.tooltip)
+                    
+                    # Get display label: tooltip if available, else formatted name
+                    display_label = self._format_field_label(sub_field_name, sub_field_info)
+                    
+                    # If widget is a GroupBox, it already shows its title - no need for left label
+                    if isinstance(sub_widget, QtWidgets.QGroupBox):
+                        layout.addRow(sub_widget)
+                    else:
+                        layout.addRow(display_label, sub_widget)
+            
+            if field_info.tooltip:
+                group.setToolTip(field_info.tooltip)
+            
+            return group
+        
+        else:
+            # Fallback for unknown types
+            return QtWidgets.QLabel(str(current_value))
+
     def _on_inspector_field_changed(self, comp, field_name: str, value: Any) -> None:
         """Handle when an inspector field value changes."""
         # Capture old value for undo
@@ -7106,11 +7431,15 @@ class {class_name}(Script):
             if hasattr(self, '_current_prefab') and self._current_prefab is not None:
                 self._current_prefab.reload()
 
-    def _on_color_field_changed(self, comp, field_name: str, widget: QtWidgets.QWidget) -> None:
-        """Handle when a color field value changes."""
-        if widget is None:
-            return
+    def _on_color_field_changed(self, comp, field_name: str, widget: QtWidgets.QWidget, value: tuple = None) -> None:
+        """Handle when a color field value changes.
         
+        Args:
+            comp: The component
+            field_name: Name of the color field
+            widget: The widget (can be None if value is provided directly)
+            value: Optional direct color value tuple (r, g, b) in 0-1 range
+        """
         # Capture old value for undo
         old_value = None
         try:
@@ -7118,11 +7447,25 @@ class {class_name}(Script):
         except Exception:
             old_value = getattr(comp, field_name, None)
         
-        channels = []
-        for row in widget._color_rows:
-            row._value_label.setText(str(row._color_slider.value()))
-            channels.append(row._color_slider.value() / 255.0)
-        new_value = tuple(channels)
+        if value is not None:
+            # Direct value provided (from color picker)
+            new_value = value
+            # Update widget value labels if widget exists (for slider mode)
+            if widget is not None and hasattr(widget, '_color_rows'):
+                for i, row in enumerate(widget._color_rows):
+                    if i < len(value):
+                        val = int(value[i] * 255)
+                        row._value_label.setText(str(val))
+                        row._color_slider.setValue(val)
+        else:
+            if widget is None:
+                return
+            # Read from slider widget
+            channels = []
+            for row in widget._color_rows:
+                row._value_label.setText(str(row._color_slider.value()))
+                channels.append(row._color_slider.value() / 255.0)
+            new_value = tuple(channels)
         
         comp.set_inspector_field_value(field_name, new_value)
         
