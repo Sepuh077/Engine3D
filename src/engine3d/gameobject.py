@@ -460,6 +460,22 @@ class GameObject:
                 "so_path": value.source_path,
             }
 
+        # Handle serializable instances (classes decorated with @serializable)
+        if hasattr(value, '__serializable__') and value.__serializable__:
+            # Serialize all InspectorField values of this serializable instance
+            serializable_fields = {}
+            if hasattr(value, 'get_inspector_fields'):
+                for field_name, _ in value.get_inspector_fields():
+                    field_value = value.get_inspector_field_value(field_name)
+                    serializable_fields[field_name] = GameObject._serialize_value(
+                        field_value, source_go_id, source_comp_idx
+                    )
+            return {
+                "__type__": "serializable",
+                "class": f"{value.__class__.__module__}.{value.__class__.__name__}",
+                "fields": serializable_fields,
+            }
+
         if isinstance(value, dict):
             return {key: GameObject._serialize_value(val, source_go_id, source_comp_idx) for key, val in value.items()}
         if isinstance(value, list):
@@ -626,6 +642,40 @@ class GameObject:
                     size=value.get("size", (1.0, 1.0, 1.0)),
                     direction=value.get("direction", (0.0, 1.0, 0.0)),
                 )
+            
+            # Handle serializable instances (classes decorated with @serializable)
+            if value.get("__type__") == "serializable":
+                serializable_class_name = value.get("class", "")
+                serializable_fields = value.get("fields", {})
+                
+                # Try to find and instantiate the serializable class
+                serializable_instance = None
+                try:
+                    # Parse the class path (module.ClassName)
+                    if '.' in serializable_class_name:
+                        module_name, class_name = serializable_class_name.rsplit('.', 1)
+                        import importlib
+                        module = importlib.import_module(module_name)
+                        serializable_cls = getattr(module, class_name, None)
+                    else:
+                        serializable_cls = None
+                    
+                    if serializable_cls and hasattr(serializable_cls, '__serializable__') and serializable_cls.__serializable__:
+                        # Create a new instance
+                        serializable_instance = serializable_cls()
+                        
+                        # Restore field values
+                        for field_name, field_value in serializable_fields.items():
+                            deserialized_value = GameObject._deserialize_value(field_value, go_registry)
+                            try:
+                                serializable_instance.set_inspector_field_value(field_name, deserialized_value)
+                            except (AttributeError, ValueError):
+                                pass  # Field might not exist anymore
+                except Exception:
+                    pass  # If we can't reconstruct, return None
+                
+                return serializable_instance
+            
             if value.get("__type__") == "repr":
                 return value.get("value")
             return {key: GameObject._deserialize_value(val, go_registry) for key, val in value.items()}
