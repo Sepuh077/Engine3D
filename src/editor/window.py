@@ -25,6 +25,7 @@ from src.input import Input
 from .selection import EditorSelection
 from .viewport import ViewportWidget
 from .scene import EditorScene
+from .gizmo import TranslateGizmo, AXIS_NONE
 
 
 class NoWheelSpinBox(QtWidgets.QDoubleSpinBox):
@@ -1366,6 +1367,9 @@ class EditorWindow(QtWidgets.QMainWindow):
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.timeout.connect(self._reload_script_components)
 
+        # Translate gizmo (3-axis arrows for object movement)
+        self._translate_gizmo = TranslateGizmo()
+
         # Connect play mode error signal
         self.play_mode_error.connect(self._on_play_mode_error)
 
@@ -1625,6 +1629,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         scroll = QtWidgets.QScrollArea(panel)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QtWidgets.QWidget(scroll)
         content_layout = QtWidgets.QVBoxLayout(content)
@@ -3496,6 +3501,8 @@ class {class_name}(Script):
         spinbox.setSingleStep(step)
         spinbox.setDecimals(decimals)
         spinbox.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        spinbox.setMinimumWidth(40)
+        spinbox.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         return spinbox
 
     def _make_vector_row(self, values: Iterable[float], on_changed, minimum: float = -10000.0, maximum: float = 10000.0,
@@ -3565,6 +3572,7 @@ class {class_name}(Script):
         self._window.show_editor_overlays = True
         self._window.editor_show_camera = True
         self._window.active_camera_override = self._editor_camera
+        self._window._editor_gizmo = self._translate_gizmo
         
         # Initialize scene management
         self._init_scene_file()
@@ -3943,8 +3951,14 @@ class {class_name}(Script):
         self._viewport.key_pressed.connect(self._on_key_pressed)
         self._viewport.key_released.connect(self._on_key_released)
 
+    def _viewport_mouse_to_pixels(self, event: QtGui.QMouseEvent) -> Tuple[int, int]:
+        """Convert a viewport mouse event to physical-pixel coordinates
+        that match Window3D.project_point() output."""
+        dpr = self._viewport.devicePixelRatio()
+        return (int(event.pos().x() * dpr), int(event.pos().y() * dpr))
+
     def _on_mouse_pressed(self, event: QtGui.QMouseEvent) -> None:
-        """Handle mouse button press for camera control."""
+        """Handle mouse button press for camera control and gizmo interaction."""
         if self._playing and not self._paused:
             # Forward to engine
             button = 0
@@ -3956,6 +3970,17 @@ class {class_name}(Script):
                 Input._mouse_down_this_frame.add(button)
                 self._scene.on_mouse_press(event.pos().x(), event.pos().y(), button, 0)
             return
+
+        # Left-click: check for gizmo hit first
+        if event.button() == QtCore.Qt.MouseButton.LeftButton and self._window:
+            mx, my = self._viewport_mouse_to_pixels(event)
+            selected = self._selection.game_objects
+            if selected:
+                axis = self._translate_gizmo.hit_test(mx, my, self._window, selected)
+                if axis != AXIS_NONE:
+                    self._translate_gizmo.begin_drag(axis, mx, my, selected)
+                    self._viewport.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
+                    return
 
         if event.button() == QtCore.Qt.MouseButton.RightButton:
             # Right-click: Orbit
@@ -3969,7 +3994,7 @@ class {class_name}(Script):
             self._viewport.setCursor(QtCore.Qt.CursorShape.SizeAllCursor)
 
     def _on_mouse_released(self, event: QtGui.QMouseEvent) -> None:
-        """Handle mouse button release for camera control."""
+        """Handle mouse button release for camera control and gizmo."""
         if self._playing and not self._paused:
             button = 0
             if event.button() == QtCore.Qt.MouseButton.LeftButton: button = 1
@@ -3981,6 +4006,15 @@ class {class_name}(Script):
                 self._scene.on_mouse_release(event.pos().x(), event.pos().y(), button, 0)
             return
 
+        # End gizmo drag on left-button release
+        if event.button() == QtCore.Qt.MouseButton.LeftButton and self._translate_gizmo.is_dragging:
+            self._translate_gizmo.end_drag()
+            self._viewport.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+            # Sync inspector with new positions
+            self._update_inspector_fields()
+            self._mark_scene_dirty()
+            return
+
         if event.button() == QtCore.Qt.MouseButton.RightButton:
             self._camera_control['orbiting'] = False
             self._viewport.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
@@ -3990,7 +4024,7 @@ class {class_name}(Script):
         self._camera_control['last_mouse_pos'] = None
 
     def _on_mouse_moved(self, event: QtGui.QMouseEvent) -> None:
-        """Handle mouse movement for camera control."""
+        """Handle mouse movement for camera control and gizmo."""
         if not self._window:
             return
 
@@ -4006,6 +4040,21 @@ class {class_name}(Script):
             self._scene.on_mouse_motion(current_pos[0], current_pos[1], dx, dy)
             self._camera_control['last_mouse_pos'] = current_pos
             return
+
+        mx, my = self._viewport_mouse_to_pixels(event)
+
+        # ── Gizmo drag update ──
+        if self._translate_gizmo.is_dragging:
+            self._translate_gizmo.update_drag(mx, my, self._window)
+            # Live-update the inspector position fields
+            self._update_transform_fields_only()
+            return
+
+        # ── Gizmo hover highlight (no button held) ──
+        selected = self._selection.game_objects
+        if selected:
+            axis = self._translate_gizmo.hit_test(mx, my, self._window, selected)
+            self._translate_gizmo.hovered_axis = axis
 
         last_pos = self._camera_control['last_mouse_pos']
         if last_pos is None:
@@ -4874,6 +4923,7 @@ class {class_name}(Script):
         
         if self._window:
             self._window.editor_selected_object = objects[0] if objects else None
+            self._window.editor_selected_objects = list(objects)
 
         self._components_dirty = True
 
@@ -5077,6 +5127,29 @@ class {class_name}(Script):
         self._set_inspector_signals_blocked(True)
         self._update_inspector_fields()
         self._set_inspector_signals_blocked(False)
+
+    def _update_transform_fields_only(self) -> None:
+        """Fast path: refresh only the position/rotation/scale spinboxes from
+        the current selection, without rebuilding component widgets.  Used by
+        the gizmo drag loop for live feedback."""
+        selected = self._selection.game_objects
+        if not selected:
+            return
+        obj = selected[0]
+
+        pos = obj.transform.position
+        rot = obj.transform.rotation
+        scale = obj.transform.scale_xyz
+
+        for fields, values in [
+            (self._pos_fields, pos),
+            (self._rot_fields, rot),
+            (self._scale_fields, scale),
+        ]:
+            for i, f in enumerate(fields):
+                f.blockSignals(True)
+                f.setValue(values[i])
+                f.blockSignals(False)
 
     def _update_inspector_fields(self, force_components: bool = False) -> None:
         """Update inspector fields. Supports both single and multi-selection."""
@@ -6165,6 +6238,7 @@ class {class_name}(Script):
         # Create a form layout for the fields
         form_layout = QtWidgets.QFormLayout()
         form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         
         # Store field widgets for updating
         field_widgets = {}
@@ -6490,6 +6564,8 @@ class {class_name}(Script):
         spinbox.setSingleStep(step)
         spinbox.setDecimals(decimals)
         spinbox.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        spinbox.setMinimumWidth(40)
+        spinbox.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         spinbox.setValue(float(current_value) if current_value is not None else field_info.default_value)
         
         if field_info.tooltip:
@@ -6508,6 +6584,8 @@ class {class_name}(Script):
         spinbox.setRange(min_val, max_val)
         spinbox.setSingleStep(step)
         spinbox.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        spinbox.setMinimumWidth(40)
+        spinbox.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         spinbox.setValue(int(current_value) if current_value is not None else field_info.default_value)
         
         if field_info.tooltip:
@@ -6553,15 +6631,23 @@ class {class_name}(Script):
         layout.setSpacing(4)
 
         color_btn = QtWidgets.QPushButton()
-        color_btn.setFixedWidth(60)
         color_btn.setFixedHeight(22)
+        color_btn.setMinimumWidth(40)
+        color_btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
         color_btn.setToolTip("Click to pick a color")
         
         r, g, b = int(color[0]), int(color[1]), int(color[2])
         color_btn.setStyleSheet(f"background-color: rgb({r}, {g}, {b}); border: 1px solid #555;")
         
         def pick_color():
-            initial = QtGui.QColor.fromRgb(r, g, b)
+            cur = comp.get_inspector_field_value(field_name)
+            if cur is None:
+                cur = field_info.default_value
+            cur_color = np.array(cur, dtype=np.float32)
+            if cur_color.max() <= 1.0:
+                cur_color = (cur_color * 255.0).astype(int)
+            cur_color = np.clip(cur_color, 0, 255)
+            initial = QtGui.QColor.fromRgb(int(cur_color[0]), int(cur_color[1]), int(cur_color[2]))
             new_color = QtWidgets.QColorDialog.getColor(initial, widget, f"Choose {field_name}")
             if new_color.isValid():
                 color_btn.setStyleSheet(f"background-color: rgb({new_color.red()}, {new_color.green()}, {new_color.blue()}); border: 1px solid #555;")
@@ -6574,6 +6660,7 @@ class {class_name}(Script):
         if field_info.tooltip:
             color_btn.setToolTip(field_info.tooltip)
         
+        widget._color_btn = color_btn
         return widget
 
     def _create_vector3_field(self, comp, field_name: str, field_info, current_value) -> QtWidgets.QWidget:
@@ -7201,7 +7288,19 @@ class {class_name}(Script):
         def on_nested_change(val):
             target_obj.set_inspector_field_value(field_name, val)
             if parent_component:
+                # Force viewport refresh
+                self._viewport.makeCurrent()
+                self._viewport.update()
+                self._viewport.doneCurrent()
                 self._mark_scene_dirty()
+                # Propagate to prefab file and all connected instances.
+                # The parent component owns the serializable object, so we
+                # propagate the change at the parent field level.  The save
+                # flow serialises the whole temp-object, which captures the
+                # updated sub-field value automatically.
+                self._propagate_prefab_field_change(
+                    parent_component, parent_field_name, target_obj
+                )
         
         if field_type == InspectorFieldType.FLOAT:
             spinbox = NoWheelSpinBox()
@@ -7398,6 +7497,36 @@ class {class_name}(Script):
             # Fallback for unknown types
             return QtWidgets.QLabel(str(current_value))
 
+    def _propagate_prefab_field_change(self, comp, field_name: str, value: Any) -> None:
+        """Propagate a field change to the prefab file and all connected instances.
+        
+        Handles two cases:
+        1. Direct prefab editing (via _prefab_edit_target): save temp object to file
+           and update all scene instances from the new prefab data.
+        2. Instance editing (via _prefab): save the instance data back to the prefab
+           file and update all other instances.
+        """
+        from src.engine3d.gameobject import Prefab
+        
+        go = getattr(comp, 'game_object', None)
+        if go is None:
+            return
+        
+        # Case 1: Direct prefab editing mode
+        if getattr(go, '_prefab_edit_target', None) is not None:
+            # _save_prefab_from_temp_object calls update_from_gameobject which
+            # serialises the temp object, writes the .prefab file, and rebuilds
+            # every scene instance via _update_all_instances.
+            self._save_prefab_from_temp_object()
+            return
+        
+        # Case 2: Editing a scene instance of a prefab
+        prefab = getattr(go, '_prefab', None)
+        if prefab is not None and isinstance(prefab, Prefab):
+            # update_from_gameobject saves to disk and rebuilds all instances
+            # (_apply_to_instance preserves each instance's position/name).
+            prefab.update_from_gameobject(go)
+
     def _on_inspector_field_changed(self, comp, field_name: str, value: Any) -> None:
         """Handle when an inspector field value changes."""
         # Capture old value for undo
@@ -7423,13 +7552,8 @@ class {class_name}(Script):
                 cmd = FieldChangeCommand(self, comp, field_name, old_value, value)
                 self._undo_manager.record(cmd)
         
-        # If editing a prefab, save changes
-        if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
-            self._save_prefab_from_temp_object()
-            if hasattr(self, '_current_prefab') and self._current_prefab is not None:
-                self._current_prefab.reload()
-            if hasattr(self, '_current_prefab') and self._current_prefab is not None:
-                self._current_prefab.reload()
+        # Propagate to prefab file and all connected instances
+        self._propagate_prefab_field_change(comp, field_name, value)
 
     def _on_color_field_changed(self, comp, field_name: str, widget: QtWidgets.QWidget, value: tuple = None) -> None:
         """Handle when a color field value changes.
@@ -7450,8 +7574,14 @@ class {class_name}(Script):
         if value is not None:
             # Direct value provided (from color picker)
             new_value = value
-            # Update widget value labels if widget exists (for slider mode)
-            if widget is not None and hasattr(widget, '_color_rows'):
+            # Update button background if widget has a color button
+            if widget is not None and hasattr(widget, '_color_btn'):
+                r, g, b = int(value[0] * 255), int(value[1] * 255), int(value[2] * 255)
+                widget._color_btn.setStyleSheet(
+                    f"background-color: rgb({r}, {g}, {b}); border: 1px solid #555;"
+                )
+            # Legacy: Update slider value labels if widget has sliders
+            elif widget is not None and hasattr(widget, '_color_rows'):
                 for i, row in enumerate(widget._color_rows):
                     if i < len(value):
                         val = int(value[i] * 255)
@@ -7460,12 +7590,15 @@ class {class_name}(Script):
         else:
             if widget is None:
                 return
-            # Read from slider widget
-            channels = []
-            for row in widget._color_rows:
-                row._value_label.setText(str(row._color_slider.value()))
-                channels.append(row._color_slider.value() / 255.0)
-            new_value = tuple(channels)
+            # Legacy: Read from slider widget
+            if hasattr(widget, '_color_rows'):
+                channels = []
+                for row in widget._color_rows:
+                    row._value_label.setText(str(row._color_slider.value()))
+                    channels.append(row._color_slider.value() / 255.0)
+                new_value = tuple(channels)
+            else:
+                return
         
         comp.set_inspector_field_value(field_name, new_value)
         
@@ -7482,11 +7615,8 @@ class {class_name}(Script):
                 cmd = FieldChangeCommand(self, comp, field_name, old_value, new_value)
                 self._undo_manager.record(cmd)
         
-        # If editing a prefab, save changes
-        if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
-            self._save_prefab_from_temp_object()
-            if hasattr(self, '_current_prefab') and self._current_prefab is not None:
-                self._current_prefab.reload()
+        # Propagate to prefab file and all connected instances
+        self._propagate_prefab_field_change(comp, field_name, new_value)
 
     def _on_vector3_field_changed(self, comp, field_name: str, widget: QtWidgets.QWidget) -> None:
         """Handle when a vector3 field value changes."""
@@ -7523,11 +7653,8 @@ class {class_name}(Script):
                 cmd = FieldChangeCommand(self, comp, field_name, old_value, new_value)
                 self._undo_manager.record(cmd)
         
-        # If editing a prefab, save changes
-        if getattr(getattr(comp, 'game_object', None), '_prefab_edit_target', None) is not None:
-            self._save_prefab_from_temp_object()
-            if hasattr(self, '_current_prefab') and self._current_prefab is not None:
-                self._current_prefab.reload()
+        # Propagate to prefab file and all connected instances
+        self._propagate_prefab_field_change(comp, field_name, new_value)
 
     def _refresh_component_fields(self, obj: GameObject) -> None:
         from src.engine3d.light import Light3D
@@ -7595,8 +7722,8 @@ class {class_name}(Script):
             elif isinstance(widget, QtWidgets.QLineEdit):
                 if not widget.hasFocus():
                     widget.setText(str(current_value) if current_value is not None else "")
-            elif hasattr(widget, "_color_rows"):
-                # Color widget
+            elif hasattr(widget, "_color_btn") or hasattr(widget, "_color_rows"):
+                # Color widget (button-based or legacy slider-based)
                 self._refresh_color_editor(widget, current_value)
             elif hasattr(widget, "_vector_fields"):
                 # Vector3 widget
@@ -7611,6 +7738,7 @@ class {class_name}(Script):
         
         form_layout = QtWidgets.QFormLayout()
         form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         color_widget = self._create_color_editor(comp)
         form_layout.addRow("Color", color_widget)
@@ -7639,6 +7767,7 @@ class {class_name}(Script):
         
         layout = QtWidgets.QFormLayout()
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         use_gravity = QtWidgets.QCheckBox()
         use_gravity.setChecked(comp.use_gravity)
@@ -7720,6 +7849,7 @@ class {class_name}(Script):
         
         layout = QtWidgets.QFormLayout()
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         intensity = self._make_spinbox(0.0, 1000.0, step=0.1, decimals=2)
         intensity.setValue(float(light.intensity))
@@ -7762,25 +7892,60 @@ class {class_name}(Script):
         box._range_field = range_field
         return box
 
-    def _create_color_editor(self, light) -> QtWidgets.QWidget:
-        color = np.array(light.color, dtype=np.float32)
+    def _create_color_editor(self, comp) -> QtWidgets.QWidget:
+        """Create a color picker button for a component's color property.
+        
+        Args:
+            comp: Component with a .color attribute (Object3D, Light3D, etc.)
+            
+        Returns:
+            Widget with a color picker button.
+        """
+        color = np.array(comp.color, dtype=np.float32)
         if color.max() <= 1.0:
             color = (color * 255.0).astype(int)
         else:
             color = np.array(color).astype(int)
         color = np.clip(color, 0, 255)
 
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        r, g, b = int(color[0]), int(color[1]), int(color[2])
 
-        rows = []
-        for label, idx in (("R", 0), ("G", 1), ("B", 2)):
-            row = self._make_color_slider(label, int(color[idx]), lambda value, l=light, w=widget: self._on_light_color_changed(l, w))
-            layout.addWidget(row)
-            rows.append(row)
-        widget._color_rows = rows
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        color_btn = QtWidgets.QPushButton()
+        color_btn.setFixedHeight(22)
+        color_btn.setMinimumWidth(40)
+        color_btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        color_btn.setToolTip("Click to pick a color")
+        color_btn.setStyleSheet(f"background-color: rgb({r}, {g}, {b}); border: 1px solid #555;")
+
+        def pick_color():
+            cur = np.array(comp.color, dtype=np.float32)
+            if cur.max() <= 1.0:
+                cur = (cur * 255.0).astype(int)
+            cur = np.clip(cur, 0, 255)
+            initial = QtGui.QColor.fromRgb(int(cur[0]), int(cur[1]), int(cur[2]))
+            new_color = QtWidgets.QColorDialog.getColor(initial, widget, "Choose Color")
+            if new_color.isValid():
+                color_btn.setStyleSheet(
+                    f"background-color: rgb({new_color.red()}, {new_color.green()}, {new_color.blue()}); border: 1px solid #555;"
+                )
+                new_value = (new_color.redF(), new_color.greenF(), new_color.blueF())
+                comp.color = new_value
+                self._viewport.makeCurrent()
+                self._viewport.update()
+                self._viewport.doneCurrent()
+                self._mark_scene_dirty()
+                # Propagate to prefab if applicable
+                self._propagate_prefab_field_change(comp, 'color', new_value)
+
+        color_btn.clicked.connect(pick_color)
+        layout.addWidget(color_btn)
+
+        widget._color_btn = color_btn
         return widget
 
     def _create_collider_fields(self, collider) -> QtWidgets.QGroupBox:
@@ -7790,6 +7955,7 @@ class {class_name}(Script):
         
         layout = QtWidgets.QFormLayout()
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         center_row = self._make_vector_row(collider.center, lambda value, c=collider: self._on_collider_center_changed(c, center_row))
         layout.addRow("Center", center_row)
@@ -7876,9 +8042,20 @@ class {class_name}(Script):
         else:
             color = np.array(color).astype(int)
         color = np.clip(color, 0, 255)
-        for idx, row in enumerate(widget._color_rows):
-            self._apply_slider(row._color_slider, int(color[idx]))
-            row._value_label.setText(str(int(color[idx])))
+
+        # New button-based color picker
+        if hasattr(widget, '_color_btn'):
+            r, g, b = int(color[0]), int(color[1]), int(color[2])
+            widget._color_btn.setStyleSheet(
+                f"background-color: rgb({r}, {g}, {b}); border: 1px solid #555;"
+            )
+            return
+
+        # Legacy slider-based color editor (kept for backward compatibility)
+        if hasattr(widget, '_color_rows'):
+            for idx, row in enumerate(widget._color_rows):
+                self._apply_slider(row._color_slider, int(color[idx]))
+                row._value_label.setText(str(int(color[idx])))
 
     def _refresh_collider_fields(self, box: QtWidgets.QGroupBox, collider) -> None:
         if hasattr(box, "_center_row"):
@@ -7914,12 +8091,14 @@ class {class_name}(Script):
         self._apply_light_color_from_widget(light, widget)
 
     def _apply_light_color_from_widget(self, light, widget: QtWidgets.QWidget) -> None:
-        channels = []
-        for row in widget._color_rows:
-            row._value_label.setText(str(row._color_slider.value()))
-            channels.append(row._color_slider.value() / 255.0)
-        light.color = tuple(channels)
-        self._viewport.update()
+        # Legacy slider-based color editor (kept for backward compatibility)
+        if hasattr(widget, '_color_rows'):
+            channels = []
+            for row in widget._color_rows:
+                row._value_label.setText(str(row._color_slider.value()))
+                channels.append(row._color_slider.value() / 255.0)
+            light.color = tuple(channels)
+            self._viewport.update()
 
     def _on_collider_center_changed(self, collider, row_widget: QtWidgets.QWidget) -> None:
         values = [field.value() for field in row_widget._vector_fields]

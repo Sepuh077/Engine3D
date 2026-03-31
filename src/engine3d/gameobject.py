@@ -1073,7 +1073,7 @@ class Prefab:
     
     def update_from_gameobject(self, game_object: GameObject) -> None:
         """
-        Update this prefab from a GameObject and propagate changes to all instances.
+        Update this prefab from a GameObject, save to disk, and update all instances.
         
         Args:
             game_object: The GameObject to use as the new prefab template
@@ -1091,6 +1091,39 @@ class Prefab:
         
         # Update all instances
         self._update_all_instances()
+    
+    def apply_field_to_instances(
+        self,
+        component_class_name: str,
+        field_name: str,
+        value: Any,
+        exclude_instance: Optional[GameObject] = None,
+    ) -> None:
+        """
+        Apply a specific field change to all instances without rebuilding components.
+        
+        This is much more efficient than _update_all_instances() because it only
+        changes one field value instead of destroying and recreating all components.
+        
+        Args:
+            component_class_name: The class name of the component to update
+            field_name: The name of the field to change
+            value: The new value to set
+            exclude_instance: Optional instance to skip (e.g. the one being edited)
+        """
+        for instance in self._instances[:]:
+            if instance is None or instance is exclude_instance:
+                continue
+            for comp in instance.components:
+                if type(comp).__name__ == component_class_name:
+                    try:
+                        comp.set_inspector_field_value(field_name, value)
+                    except Exception:
+                        try:
+                            setattr(comp, field_name, value)
+                        except Exception:
+                            pass
+                    break
     
     @property
     def name(self) -> str:

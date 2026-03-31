@@ -397,9 +397,11 @@ class Window3D:
         # Editor overlay options
         self.show_editor_overlays = False
         self.editor_selected_object: Optional[GameObject] = None
+        self.editor_selected_objects: List[GameObject] = []
         self.editor_show_camera = True
         self.editor_show_axis = True
         self.editor_show_gizmo = True
+        self._editor_gizmo = None   # set by EditorWindow to a TranslateGizmo
         self.active_camera_override: Optional[Camera3D] = None
 
         # Scene system
@@ -1021,7 +1023,7 @@ class Window3D:
 
         Returns (x, y, depth) in screen pixels, or None if behind camera.
         """
-        camera = self._current_scene.camera if self._current_scene else self.camera
+        camera = self.active_camera_override or (self._current_scene.camera if self._current_scene else self.camera)
         view = camera.get_view_matrix()
         projection = camera.get_projection_matrix(self.aspect)
         vec = np.array([world_pos[0], world_pos[1], world_pos[2], 1.0], dtype=np.float32)
@@ -1874,6 +1876,10 @@ class Window3D:
                         self._draw_editor_camera(cam)
 
         self._draw_editor_colliders()
+
+        # Draw translate gizmo on selected objects
+        if self.editor_show_gizmo and self._editor_gizmo and self.editor_selected_objects:
+            self._editor_gizmo.draw(self, self.editor_selected_objects)
 
     def _draw_editor_camera(self, camera: Camera3D):
         cam_go = camera.game_object
