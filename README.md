@@ -1,6 +1,6 @@
-# Engine3D - Simple GPU-Accelerated 3D Engine for Python
+# Engine3D — Open Source 3D Game Engine for Python
 
-A beginner-friendly 3D engine inspired by [Arcade](https://arcade.academy/), providing an easy-to-use API while leveraging GPU acceleration via ModernGL.
+Engine3D is an open source, beginner-friendly 3D game engine for Python inspired by [Arcade](https://arcade.academy/). It focuses on a simple, batteries-included API (window/scene/object) with optional GPU acceleration via ModernGL and an included PySide6 editor.
 
 ## Features
 
@@ -14,8 +14,32 @@ A beginner-friendly 3D engine inspired by [Arcade](https://arcade.academy/), pro
 
 ## Installation
 
+### Requirements
+- Python 3.x
+- A working OpenGL driver (recommended for GPU rendering)
+
+### Install dependencies
+
 ```bash
-pip install pygame moderngl numpy
+pip install -r requirements.txt
+```
+
+If you only want the runtime dependencies, install at minimum:
+
+```bash
+pip install pygame numpy
+```
+
+For GPU acceleration (recommended):
+
+```bash
+pip install moderngl moderngl-window
+```
+
+For the editor:
+
+```bash
+pip install PySide6
 ```
 
 ## Quick Start
@@ -48,17 +72,37 @@ MyGame(800, 600, "My 3D Game").run()
 
 ## Editor
 
-Launch the PySide6 editor:
+Engine3D includes a PySide6-based editor for inspecting and building scenes.
+
+Launch the editor:
 
 ```bash
 python -c "from src.engine3d import run_editor; run_editor('.')"
 ```
 
-The editor layout includes:
-- Left: Scene hierarchy with add/remove controls.
-- Center: Renderer viewport with axis, camera frustum, and transform gizmo overlays.
-- Right: Inspector with GameObject details and components.
-- Bottom: Project files browser.
+Editor layout:
+- Left: Scene hierarchy (add/remove objects)
+- Center: Viewport (render, axis, gizmos/overlays)
+- Right: Inspector (selected object + components)
+- Bottom: Project/files browser
+
+If PySide6 is not installed, install it first:
+
+```bash
+pip install PySide6
+```
+
+## Development (recommended editor)
+
+This is a Python project; VS Code works well.
+
+Recommended VS Code extensions:
+- Python (ms-python.python)
+- Pylance (ms-python.vscode-pylance)
+
+Suggested settings:
+- Use the same interpreter/environment where you installed `requirements.txt`
+- Enable formatting and linting in your workspace (project defaults)
 
 ## Examples
 
