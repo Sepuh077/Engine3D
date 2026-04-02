@@ -3303,6 +3303,7 @@ class {class_name}(Script):
             if self._window:
                 self._window.active_camera_override = None
                 self._window.editor_show_axis = False
+                self._window.editor_show_gizmo = False
             
             # Initialize all scripts
             for obj in self._scene.objects:
@@ -3357,6 +3358,7 @@ class {class_name}(Script):
             if self._window:
                 self._window.active_camera_override = self._editor_camera
                 self._window.editor_show_axis = True
+                self._window.editor_show_gizmo = True
             
             # Restore scene state
             if self._original_scene_data:

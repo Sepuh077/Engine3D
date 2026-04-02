@@ -464,6 +464,12 @@ def create_cube(size: float = 1.0,
     ], dtype=np.int32)
     
     obj.mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+    # Set vertex colors to match the Object3D color (trimesh defaults to gray)
+    num_vertices = len(obj.mesh.vertices)
+    c = obj._color if hasattr(obj, '_color') else np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+    if len(c) == 3:
+        c = np.append(c, 1.0)
+    obj.mesh.visual.vertex_colors = np.full((num_vertices, 4), c, dtype=np.float32)
     obj._post_process_geometry(f"primitive_cube_1")
     
     return go
@@ -483,6 +489,12 @@ def create_sphere(radius: float = 1.0,
     
     mesh = trimesh.creation.icosphere(subdivisions=subdivisions, radius=1.0)
     obj.mesh = mesh
+    # Set vertex colors to match the Object3D color (trimesh defaults to gray)
+    num_vertices = len(obj.mesh.vertices)
+    c = obj._color if hasattr(obj, '_color') else np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+    if len(c) == 3:
+        c = np.append(c, 1.0)
+    obj.mesh.visual.vertex_colors = np.full((num_vertices, 4), c, dtype=np.float32)
     obj._post_process_geometry(f"primitive_sphere_1")
     return go
 
@@ -513,6 +525,12 @@ def create_plane(width: float = 10.0,
     ], dtype=np.int32)
 
     obj.mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+    # Set vertex colors to match the Object3D color (trimesh defaults to gray)
+    num_vertices = len(obj.mesh.vertices)
+    c = obj._color if hasattr(obj, '_color') else np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+    if len(c) == 3:
+        c = np.append(c, 1.0)
+    obj.mesh.visual.vertex_colors = np.full((num_vertices, 4), c, dtype=np.float32)
     obj._post_process_geometry(f"primitive_plane_1_1")
 
     return go
