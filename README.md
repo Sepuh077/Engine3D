@@ -45,7 +45,7 @@ pip install PySide6
 ## Quick Start
 
 ```python
-from src.engine3d import Window3D, Keys, Color, Time
+from engine3d.engine3d import Window3D, Keys, Color, Time
 
 class MyGame(Window3D):
     def setup(self):
@@ -77,7 +77,7 @@ Engine3D includes a PySide6-based editor for inspecting and building scenes.
 Launch the editor:
 
 ```bash
-python -c "from src.engine3d import run_editor; run_editor('.')"
+python -c "from engine3d.engine3d import run_editor; run_editor('.')"
 ```
 
 Editor layout:
@@ -108,7 +108,7 @@ Suggested settings:
 
 ### Basic Example
 ```python
-from src.engine3d import Window3D, Object3D, Keys, Color, Time
+from engine3d.engine3d import Window3D, Object3D, Keys, Color, Time
 
 class BasicGame(Window3D):
     def setup(self):
@@ -133,7 +133,7 @@ BasicGame(800, 600, "Basic Example").run()
 
 ### 100 Objects at 60 FPS
 ```python
-from src.engine3d import Window3D, Color
+from engine3d.engine3d import Window3D, Color
 
 class ManyObjects(Window3D):
     def setup(self):
@@ -154,7 +154,7 @@ ManyObjects(800, 600, "100 Objects Demo").run()
 
 ### Using Scenes
 ```python
-from src.engine3d import Window3D, Scene3D, Keys, Time
+from engine3d.engine3d import Window3D, Scene3D, Keys, Time
 
 class MenuScene(Scene3D):
     def setup(self):

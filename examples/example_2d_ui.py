@@ -12,17 +12,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.engine3d import (
+from engine3d.engine3d import (
     Window3D, Scene3D, Object3D, Time,
     draw_text, draw_rectangle, create_cube, create_plane,
     draw_image, PointLight3D, GameObject
 )
-from src.engine3d.ui import (
+from engine3d.engine3d.ui import (
     UILayer, Button, CheckBox, Slider, ProgressBar, Panel, Label
 )
-from src.physics import Rigidbody
-from src.input import Keys
-from src.types import Color
+from engine3d.physics import Rigidbody
+from engine3d.input import Keys
+from engine3d.types import Color
 
 
 class UIScene(Scene3D):

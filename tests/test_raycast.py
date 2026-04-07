@@ -6,8 +6,8 @@ import os
 # Ensure src is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.physics.collider import Collider, SphereCollider, BoxCollider
-from src.physics.raycast import Ray, raycast, raycast_all, RaycastHit
+from engine3d.physics.collider import Collider, SphereCollider, BoxCollider
+from engine3d.physics.raycast import Ray, raycast, raycast_all, RaycastHit
 
 def test_ray_sphere():
     print("Testing Ray-Sphere...")

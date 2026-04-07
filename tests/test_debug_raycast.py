@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 # Ensure src is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.physics.raycast import Ray, debug_raycast
+from engine3d.physics.raycast import Ray, debug_raycast
 
 @patch('src.physics.raycast.get_window')
 def test_debug_raycast_mock(mock_get_window):

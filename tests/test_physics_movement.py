@@ -6,12 +6,12 @@ import os
 # Ensure src is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.engine3d.component import Time
-from src.engine3d.object3d import create_cube, create_plane
-from src.engine3d.window import Window3D
-from src.physics.rigidbody import Rigidbody
-from src.physics.collider import BoxCollider, CollisionMode
-from src.types import Vector3
+from engine3d.engine3d.component import Time
+from engine3d.engine3d.object3d import create_cube, create_plane
+from engine3d.engine3d.window import Window3D
+from engine3d.physics.rigidbody import Rigidbody
+from engine3d.physics.collider import BoxCollider, CollisionMode
+from engine3d.types import Vector3
 
 class HeadlessWindow(Window3D):
     """
