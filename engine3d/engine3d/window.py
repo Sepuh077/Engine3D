@@ -1653,37 +1653,124 @@ class Window3D:
     # =========================================================================
     
     def _render(self):
-        """Render the scene with vertex colors OR real textures."""
-        r, g, b = self.background_color
-        
+        """Render the scene with support for multiple cameras and viewports."""
         # Use custom screen FBO if set (e.g. for Qt embedding where FBO changes)
         if getattr(self, '_screen_fbo', None):
-            self._screen_fbo.clear(r, g, b)
             self._screen_fbo.use()
         else:
-            self._ctx.clear(r, g, b)
+            pass  # Will clear per-viewport
 
         self.bind_context()
 
         # Clear 2D overlay surface for new frame (draws happen in on_draw)
         self._2d_surface.fill((0, 0, 0, 0))
 
-        camera = self.active_camera_override
-        if not camera:
-            camera = self._current_scene.camera if self._current_scene else self.camera
-
-        if not camera:
+        # Determine which cameras to render
+        cameras_to_render = self._get_cameras_to_render()
+        
+        if not cameras_to_render:
+            # No cameras to render - just clear the screen and return
+            if getattr(self, '_screen_fbo', None):
+                self._screen_fbo.clear(0.1, 0.1, 0.15)
+            else:
+                self._ctx.clear(0.1, 0.1, 0.15)
             return
 
+        # Render each camera in priority order
+        for camera in cameras_to_render:
+            try:
+                self._render_camera(camera)
+            except Exception as e:
+                import traceback
+                print(f"Error rendering camera: {e}")
+                traceback.print_exc()
+                # Continue to next camera instead of crashing
+
+        # ------------------------------------------------------------
+        # Custom draw hooks (called once after all cameras)
+        # ------------------------------------------------------------
+        if self._current_scene:
+            self._current_scene.on_draw()
+        self.on_draw()
+
+        if self.show_editor_overlays:
+            self._draw_editor_overlays()
+
+        # Render 2D overlay on top (after all 3D and custom draws)
+        self._render_2d_overlay()
+
+        # Clear 2D overlay surface after presenting
+        self._2d_surface.fill((0, 0, 0, 0))
+
+        if self._use_pygame_window:
+            pygame.display.flip()
+    
+    def _get_cameras_to_render(self) -> List[Camera3D]:
+        """Get the list of cameras to render, sorted by priority."""
+        # Check for override first
+        if self.active_camera_override:
+            return [self.active_camera_override]
+        
+        # Get cameras from scene
+        if self._current_scene:
+            cameras = self._current_scene.get_cameras_sorted()
+            if cameras:
+                return cameras
+        
+        # Fallback to window's default camera
+        return [self.camera]
+    
+    def _render_camera(self, camera: Camera3D):
+        """
+        Render the scene from a single camera's perspective.
+        
+        Args:
+            camera: The camera to render from
+        """
+        from engine3d.engine3d.camera import ClearFlags, Viewport
+        
+        # Validate camera has a viewport
+        viewport = getattr(camera, 'viewport', None)
+        if viewport is None:
+            print(f"Warning: Camera has no viewport, using default fullscreen")
+            viewport = Viewport.full_screen()
+            camera.viewport = viewport
+        elif isinstance(viewport, str):
+            # Handle legacy serialized viewports (shouldn't happen but be safe)
+            print(f"Warning: Camera viewport is a string '{viewport}', using default fullscreen")
+            viewport = Viewport.full_screen()
+            camera.viewport = viewport
+        
+        # Get viewport in pixels
+        try:
+            vp_x, vp_y, vp_w, vp_h = viewport.to_pixels(self.width, self.height)
+        except Exception as e:
+            print(f"Error getting viewport pixels: {e}")
+            return
+        
+        # Skip invalid viewports
+        if vp_w <= 0 or vp_h <= 0:
+            return
+        
+        # Set the OpenGL viewport
+        self._ctx.viewport = (vp_x, vp_y, vp_w, vp_h)
+        
+        # Clear based on clear_flags
+        self._apply_clear_flags(camera, vp_x, vp_y, vp_w, vp_h)
+        
+        # Get scene objects
         if self._current_scene:
             light = self._current_scene.light
             objects = self._current_scene.objects
         else:
             light = self.light
             objects = self.objects
-
+        
+        # Calculate aspect ratio for this viewport
+        viewport_aspect = vp_w / vp_h if vp_h > 0 else self.aspect
+        
         view = camera.get_view_matrix()
-        projection = camera.get_projection_matrix(self.aspect)
+        projection = camera.get_projection_matrix(viewport_aspect)
 
         # ------------------------------------------------------------
         # Light uniforms
@@ -1755,6 +1842,12 @@ class Window3D:
             obj3d = obj.get_component(Object3D)
             if not obj3d or not obj3d._visible:
                 continue
+            
+            # Check render layer mask
+            if hasattr(camera, 'render_mask') and hasattr(obj, 'render_layer'):
+                if not (camera.render_mask & obj.render_layer):
+                    continue  # Object not visible to this camera
+            
             self._ensure_mesh(obj3d)
             
             # Transparency check
@@ -1837,7 +1930,7 @@ class Window3D:
         # ------------------------------------------------------------
         # Draw Skybox (before opaque, with rotation-only view, depth disabled)
         # ------------------------------------------------------------
-        if camera and getattr(camera, 'skybox', None) is not None:
+        if camera and getattr(camera, 'skybox', None) is not None and ClearFlags.SKYBOX in camera.clear_flags:
             self._render_skybox(camera, view, projection)
 
         # ------------------------------------------------------------
@@ -1853,25 +1946,69 @@ class Window3D:
             self._ctx.depth_mask = False
             draw_objects(transparent_objects)
             self._ctx.depth_mask = True  # Restore for next frame
-
-        # ------------------------------------------------------------
-        # Custom draw hooks
-        # ------------------------------------------------------------
-        if self._current_scene:
-            self._current_scene.on_draw()
-        self.on_draw()
-
-        if self.show_editor_overlays:
-            self._draw_editor_overlays()
-
-        # Render 2D overlay on top (after all 3D and custom draws)
-        self._render_2d_overlay()
-
-        # Clear 2D overlay surface after presenting
-        self._2d_surface.fill((0, 0, 0, 0))
-
-        if self._use_pygame_window:
-            pygame.display.flip()
+        
+        # Draw viewport border for non-fullscreen cameras
+        if not self._is_fullscreen_viewport(camera.viewport):
+            self._draw_viewport_border(vp_x, vp_y, vp_w, vp_h)
+    
+    def _apply_clear_flags(self, camera: Camera3D, vp_x: int, vp_y: int, vp_w: int, vp_h: int):
+        """Apply clear flags for a camera's viewport."""
+        from engine3d.engine3d.camera import ClearFlags
+        
+        flags = camera.clear_flags
+        is_fullscreen = self._is_fullscreen_viewport(camera.viewport)
+        
+        # Get background color
+        bg = camera.background_color
+        if len(bg) == 3:
+            r, g, b = bg
+        else:
+            r, g, b = bg[:3]
+        
+        # For fullscreen cameras, clear without scissor
+        if is_fullscreen:
+            if ClearFlags.DEPTH in flags or ClearFlags.SKYBOX in flags:
+                # Clear both color and depth for fullscreen
+                if ClearFlags.SKYBOX in flags and not getattr(camera, 'skybox', None):
+                    self._ctx.clear(r, g, b, depth=1.0)
+                elif ClearFlags.COLOR in flags:
+                    self._ctx.clear(r, g, b, depth=1.0)
+                else:
+                    # Just clear depth
+                    self._ctx.clear(depth=1.0)
+            elif ClearFlags.COLOR in flags:
+                self._ctx.clear(r, g, b)
+        else:
+            # For non-fullscreen cameras, use scissor to clear only the viewport
+            old_scissor = self._ctx.scissor
+            self._ctx.scissor = (vp_x, vp_y, vp_w, vp_h)
+            
+            if ClearFlags.DEPTH in flags:
+                self._ctx.clear(depth=1.0)
+            
+            if ClearFlags.COLOR in flags or (ClearFlags.SKYBOX in flags and not getattr(camera, 'skybox', None)):
+                self._ctx.clear(r, g, b)
+            
+            self._ctx.scissor = old_scissor
+    
+    def _is_fullscreen_viewport(self, viewport) -> bool:
+        """Check if a viewport covers the entire screen."""
+        return (abs(viewport.x) < 0.001 and 
+                abs(viewport.y) < 0.001 and 
+                abs(viewport.width - 1.0) < 0.001 and 
+                abs(viewport.height - 1.0) < 0.001)
+    
+    def _draw_viewport_border(self, vp_x: int, vp_y: int, vp_w: int, vp_h: int):
+        """Draw a border around a viewport (for picture-in-picture cameras)."""
+        # Draw border on 2D overlay
+        border_color = (1.0, 1.0, 1.0)  # White border
+        border_width = 2
+        
+        # Convert from OpenGL coords (bottom-left origin) to pygame coords (top-left origin)
+        pygame_y = self.height - vp_y - vp_h
+        
+        # Draw rectangle border
+        self.draw_rectangle(vp_x, pygame_y, vp_w, vp_h, border_color, border_width)
 
     
     def _draw_editor_overlays(self):
@@ -2155,6 +2292,7 @@ class Window3D:
         raw_dt = self._clock.tick(self._fps) / 1000.0
         self._delta_time = raw_dt
         Time.delta_time = raw_dt * Time.scale
+        Time.time += Time.delta_time  # Accumulate elapsed time
 
         self._handle_events()
 

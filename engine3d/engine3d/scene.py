@@ -53,7 +53,7 @@ class Scene3D:
         
         # Create default main camera
         cam_obj = GameObject("Main Camera")
-        camera = Camera3D()
+        camera = Camera3D(is_main=True)  # Mark as main camera
         cam_obj.add_component(camera)
         cam_obj.transform.position = (0, 5, 10)
         cam_obj.transform.look_at((0, 0, 0))
@@ -68,7 +68,12 @@ class Scene3D:
         """Get the main camera."""
         if self._main_camera:
             return self._main_camera
-        # If no main camera, find first camera
+        # If no main camera, find first camera with is_main flag
+        for cam in self._cameras:
+            if cam.is_main:
+                self._main_camera = cam
+                return cam
+        # If no main flag, find first camera
         if self._cameras:
             return self._cameras[0]
         # Fallback (shouldn't happen if initialized correctly)
@@ -78,12 +83,19 @@ class Scene3D:
     @main_camera.setter
     def main_camera(self, camera: Camera3D):
         """Set the main camera."""
+        # Clear is_main flag on all existing cameras
+        for cam in self._cameras:
+            cam._is_main = False
+        
+        # Set the new main camera
         if camera in self._cameras:
+            camera._is_main = True
             self._main_camera = camera
         else:
-            # Maybe auto-add?
+            # Auto-add if the camera's game object is in the scene
             if camera.game_object and camera.game_object in self.objects:
                 self._cameras.append(camera)
+                camera._is_main = True
                 self._main_camera = camera
 
     @property
@@ -95,6 +107,145 @@ class Scene3D:
     def camera(self, value: Camera3D):
         """Set main camera (backward compatibility)."""
         self.main_camera = value
+    
+    @property
+    def cameras(self) -> List[Camera3D]:
+        """Get all cameras in the scene."""
+        return self._cameras.copy()
+    
+    def get_cameras_sorted(self) -> List[Camera3D]:
+        """
+        Get all cameras sorted by priority (render order).
+        
+        Lower priority values render first (background).
+        Higher priority values render last (overlay/on top).
+        
+        Returns:
+            List of cameras sorted by priority (ascending).
+        """
+        return sorted(self._cameras, key=lambda cam: cam.priority)
+    
+    def add_camera(self, 
+                   name: str = "Camera",
+                   position: Tuple[float, float, float] = (0, 0, 0),
+                   look_at: Optional[Tuple[float, float, float]] = None,
+                   fov: float = 60.0,
+                   viewport = None,
+                   priority: int = 0,
+                   is_main: bool = False) -> Camera3D:
+        """
+        Create and add a new camera to the scene.
+        
+        Args:
+            name: Name for the camera GameObject
+            position: Camera position in world space
+            look_at: Point the camera should look at (optional)
+            fov: Field of view in degrees
+            viewport: Viewport for this camera (Viewport object or None for fullscreen)
+            priority: Render priority (lower = render first)
+            is_main: Whether this is the main camera
+            
+        Returns:
+            The created Camera3D component
+        """
+        cam_obj = GameObject(name)
+        camera = Camera3D(fov=fov, viewport=viewport, priority=priority, is_main=is_main)
+        cam_obj.add_component(camera)
+        cam_obj.transform.position = position
+        
+        if look_at:
+            cam_obj.transform.look_at(look_at)
+        
+        self.add_object(cam_obj)
+        
+        if is_main:
+            self.main_camera = camera
+        
+        return camera
+    
+    def create_minimap_camera(self,
+                              position: Tuple[float, float, float] = (0, 50, 0),
+                              look_at: Tuple[float, float, float] = (0, 0, 0),
+                              corner: str = 'top-right',
+                              size: float = 0.25,
+                              fov: float = 60.0) -> Camera3D:
+        """
+        Create a minimap camera (top-down view in a corner).
+        
+        Args:
+            position: Camera position (high up for top-down view)
+            look_at: Point to look at (usually player or scene center)
+            corner: 'top-right', 'top-left', 'bottom-right', or 'bottom-left'
+            size: Viewport size (0.0 to 1.0)
+            fov: Field of view
+            
+        Returns:
+            The created Camera3D component
+        """
+        from engine3d.engine3d.camera import Viewport
+        viewport = Viewport.minimap(corner, size)
+        return self.add_camera(
+            name="Minimap Camera",
+            position=position,
+            look_at=look_at,
+            fov=fov,
+            viewport=viewport,
+            priority=100  # Render on top
+        )
+    
+    def create_mirror_camera(self,
+                             position: Tuple[float, float, float] = (0, 2, -5),
+                             look_at: Tuple[float, float, float] = (0, 2, 5),
+                             position_str: str = 'top',
+                             width: float = 0.3,
+                             height: float = 0.15) -> Camera3D:
+        """
+        Create a rear-view mirror camera.
+        
+        Args:
+            position: Camera position (behind the player)
+            look_at: Point to look at (behind the player)
+            position_str: 'top', 'top-left', or 'top-right'
+            width: Viewport width (0.0 to 1.0)
+            height: Viewport height (0.0 to 1.0)
+            
+        Returns:
+            The created Camera3D component
+        """
+        from engine3d.engine3d.camera import Viewport
+        viewport = Viewport.mirror(position_str, width, height)
+        return self.add_camera(
+            name="Mirror Camera",
+            position=position,
+            look_at=look_at,
+            fov=60.0,
+            viewport=viewport,
+            priority=50  # Render after main but before UI
+        )
+    
+    def remove_camera(self, camera: Camera3D):
+        """
+        Remove a camera from the scene.
+        
+        Args:
+            camera: The camera to remove
+        """
+        if camera in self._cameras:
+            self._cameras.remove(camera)
+            if self._main_camera == camera:
+                # Find new main camera
+                self._main_camera = None
+                for cam in self._cameras:
+                    if cam.is_main:
+                        self._main_camera = cam
+                        break
+                if self._main_camera is None and self._cameras:
+                    self._main_camera = self._cameras[0]
+            # Remove the game object if it only contains the camera
+            if camera.game_object:
+                go = camera.game_object
+                if len(go.components) == 1:  # Only the camera
+                    self.remove_object(go)
 
     @property
     def light(self) -> Optional[DirectionalLight3D]:

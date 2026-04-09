@@ -37,6 +37,25 @@ class GameObject:
         # Coroutines state
         self._active_coroutines: List[Dict[str, Any]] = []
         self._end_of_frame_coroutines: List[Dict[str, Any]] = []
+        
+        # Render layer for selective camera rendering
+        # Import here to avoid circular imports at module level
+        from engine3d.engine3d.camera import RenderLayer
+        self._render_layer: RenderLayer = RenderLayer.DEFAULT
+    
+    @property
+    def render_layer(self):
+        """Get the render layer for this object (used for selective camera rendering)."""
+        return self._render_layer
+    
+    @render_layer.setter
+    def render_layer(self, value):
+        """Set the render layer for this object."""
+        from engine3d.engine3d.camera import RenderLayer
+        if isinstance(value, RenderLayer):
+            self._render_layer = value
+        else:
+            self._render_layer = RenderLayer.DEFAULT
 
     @property
     def tag(self) -> Optional[str]:
@@ -443,6 +462,20 @@ class GameObject:
                 "__type__": "ColliderGroup",
                 "name": value.name,
             }
+        
+        # Handle Viewport objects
+        try:
+            from engine3d.engine3d.camera import Viewport
+        except ImportError:
+            Viewport = None
+        if Viewport is not None and isinstance(value, Viewport):
+            return {
+                "__type__": "Viewport",
+                "x": value.x,
+                "y": value.y,
+                "width": value.width,
+                "height": value.height,
+            }
 
         try:
             from engine3d.engine3d.graphics.material import Material
@@ -607,6 +640,14 @@ class GameObject:
                 from engine3d.physics.group import ColliderGroup
                 name = value.get("name", "default")
                 return ColliderGroup._registry.get(name) or ColliderGroup(name)
+            if value.get("__type__") == "Viewport":
+                from engine3d.engine3d.camera import Viewport
+                return Viewport(
+                    x=value.get("x", 0.0),
+                    y=value.get("y", 0.0),
+                    width=value.get("width", 1.0),
+                    height=value.get("height", 1.0),
+                )
             if value.get("__type__") == "Material":
                 from engine3d.engine3d.graphics import material
                 class_name = value.get("class", "LitMaterial")

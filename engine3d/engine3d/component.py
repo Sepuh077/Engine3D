@@ -540,6 +540,7 @@ class Time:
     """
     delta_time: float = 0.0
     scale: float = 1.0
+    time: float = 0.0  # Total elapsed time since game start
 
 
 class Component:

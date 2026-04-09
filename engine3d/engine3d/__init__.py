@@ -43,7 +43,7 @@ from engine3d.engine3d.gameobject import GameObject, Prefab
 from engine3d.engine3d.component import Component, Script, WaitForSeconds, WaitEndOfFrame, Time, InspectorField, InspectorFieldType, Tag, serializable
 from engine3d.engine3d.transform import Transform
 from engine3d.engine3d.object3d import Object3D, create_cube, create_sphere, create_plane
-from engine3d.engine3d.camera import Camera3D
+from engine3d.engine3d.camera import Camera3D, Viewport, ClearFlags, RenderLayer
 from engine3d.engine3d.light import Light3D, DirectionalLight3D, PointLight3D
 from engine3d.engine3d.graphics.material import (
     Material,
@@ -135,6 +135,9 @@ __all__ = [
     'create_sphere',
     'create_plane',
     'Camera3D',
+    'Viewport',
+    'ClearFlags',
+    'RenderLayer',
     'Light3D',
     'DirectionalLight3D',
     'PointLight3D',

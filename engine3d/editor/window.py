@@ -3457,8 +3457,17 @@ class {class_name}(Script):
             error_msg = str(e)
             traceback_text = traceback.format_exc()
             
-            # Show error dialog with details
-            self._console_widget.log(traceback_text)
+            # Print to terminal for debugging
+            print(f"Play mode error: {error_msg}")
+            print(traceback_text)
+            
+            # Show error in console
+            if hasattr(self, '_console_widget') and self._console_widget:
+                self._console_widget.log(f"Play Mode Error: {error_msg}", 'ERROR')
+                self._console_widget.log(f"Traceback:\n{traceback_text}", 'ERROR')
+                # Switch to console tab
+                if hasattr(self, '_bottom_tab_widget'):
+                    self._bottom_tab_widget.setCurrentIndex(1)
 
     def _on_pause_clicked(self) -> None:
         """Toggle pause state."""
@@ -4055,11 +4064,17 @@ class {class_name}(Script):
                                 comp.update()
         except Exception as e:
             # Handle errors during play mode
+            import traceback
+            error_msg = str(e)
+            traceback_text = traceback.format_exc()
+            
+            # Always print to console for debugging
+            print(f"Render frame error: {error_msg}")
+            print(traceback_text)
+            
             if self._playing:
-                import traceback
-                error_msg = str(e)
-                traceback_text = traceback.format_exc()
-                self.play_mode_error.emit(error_msg, traceback_text)
+                # Use QTimer to defer the error handling to avoid issues with OpenGL context
+                QtCore.QTimer.singleShot(0, lambda: self._on_play_mode_error(error_msg, traceback_text))
             else:
                 # Re-raise if not in play mode
                 raise
