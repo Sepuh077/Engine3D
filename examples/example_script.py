@@ -18,11 +18,11 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
-from src.engine3d import Window3D, Scene3D, Script, WaitForSeconds, WaitEndOfFrame, Time
-from src.engine3d.object3d import create_cube, create_sphere, create_plane, Object3D
-from src.physics import Rigidbody, BoxCollider, SphereCollider
-from src.types import Color
-from src.input import Keys
+from engine3d.engine3d import Window3D, Scene3D, Script, WaitForSeconds, WaitEndOfFrame, Time
+from engine3d.engine3d.object3d import create_cube, create_sphere, create_plane, Object3D
+from engine3d.physics import Rigidbody, BoxCollider, SphereCollider
+from engine3d.types import Color
+from engine3d.input import Keys
 from time import time
 
 

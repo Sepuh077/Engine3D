@@ -23,11 +23,11 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_file_dir)
 sys.path.insert(0, project_root)
 
-from src.input import Keys
-from src.types import Color
-from src.engine3d import Window3D, GameObject, Time, Script
-from src.engine3d.scene import Scene3D
-from src.physics import Rigidbody, BoxCollider
+from engine3d.input import Keys
+from engine3d.types import Color
+from engine3d.engine3d import Window3D, GameObject, Time, Script
+from engine3d.engine3d.scene import Scene3D
+from engine3d.physics import Rigidbody, BoxCollider
 
 
 PREFAB_PATH = "player.prefab"
@@ -49,7 +49,7 @@ class PlayerMovement(Script):
         if not self.game_object:
             return
 
-        from src.engine3d.drawing import get_window
+        from engine3d.engine3d.drawing import get_window
         window = get_window()
         if not window:
             return
@@ -113,7 +113,7 @@ class SerializationScene(Scene3D):
     def _create_environment(self):
         """Create some environment objects."""
         # Floor
-        from src.engine3d.object3d import create_plane
+        from engine3d.engine3d.object3d import create_plane
         floor = self.add_object(create_plane(30, 30, color=Color.DARK_GRAY))
         floor.transform.position = (0, -0.5, 0)
         floor.add_component(Rigidbody(is_static=True))

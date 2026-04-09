@@ -6,8 +6,8 @@ import os
 # Ensure src is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.physics.collider import Collider, BoxCollider, SphereCollider
-from src.physics.collision import objects_collide, get_collision_manifold, CollisionManifold
+from engine3d.physics.collider import Collider, BoxCollider, SphereCollider
+from engine3d.physics.collision import objects_collide, get_collision_manifold, CollisionManifold
 
 def test_sphere_sphere():
     print("Testing Sphere-Sphere...")
