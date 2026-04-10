@@ -455,7 +455,17 @@ class InspectorField(Generic[_T]):
         return value
     
     def __set__(self, obj: Any, value: _T):
-        """Set the field value."""
+        """Set the field value.
+        
+        For enum fields, convert int values to enum members automatically.
+        """
+        # Convert int to enum member for ENUM fields
+        if self.field_type == InspectorFieldType.ENUM and isinstance(value, int):
+            if self._original_field_type:
+                try:
+                    value = self._original_field_type(value)
+                except ValueError:
+                    pass  # Invalid value, keep as-is
         setattr(obj, self.private_name, value)
     
     def get_info(self) -> InspectorFieldInfo:

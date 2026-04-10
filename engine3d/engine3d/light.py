@@ -27,6 +27,7 @@ class Light3D(Component):
             intensity: Light intensity multiplier
         """
         super().__init__()
+        # InspectorField descriptors handle storage with defaults
         self.color = color
         self.intensity = intensity
 

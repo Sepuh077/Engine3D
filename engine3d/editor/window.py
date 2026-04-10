@@ -3499,6 +3499,11 @@ class {class_name}(Script):
                 # Clear current scene's GPU resources
                 self._window.clear_objects()
                 
+                # Clear selection/gizmo state to avoid stale references during scene restore
+                if self._window:
+                    self._window.editor_selected_object = None
+                    self._window.editor_selected_objects = []
+                
                 # Re-create scene from data
                 new_scene = EditorScene._from_scene_dict(self._original_scene_data)
                 self._scene = new_scene
@@ -3520,10 +3525,8 @@ class {class_name}(Script):
                                 restored_selection.append(obj)
                                 break
                     if restored_selection:
-                        self._select_object(restored_selection[0])
-                        # Also select multi-selection if there were multiple
-                        if len(restored_selection) > 1:
-                            self._selection.game_objects = restored_selection
+                        # Use _select_objects to properly update both _selection and editor_selected_objects
+                        self._select_objects(restored_selection)
                     else:
                         self._select_object(None)
                     delattr(self, '_pre_play_selection_ids')
@@ -5097,6 +5100,15 @@ class {class_name}(Script):
         # Update inspector (handles both single and multi-selection)
         self._update_inspector_fields(force_components=True)
         
+        # Also update hierarchy tree visual selection
+        if hasattr(self, '_hierarchy_tree') and hasattr(self, '_object_items'):
+            self._hierarchy_tree.blockSignals(True)
+            self._hierarchy_tree.clearSelection()
+            for obj in objects:
+                if obj in self._object_items:
+                    self._object_items[obj].setSelected(True)
+            self._hierarchy_tree.blockSignals(False)
+        
         self._set_inspector_signals_blocked(False)
         self._components_dirty = False
 
@@ -6146,6 +6158,28 @@ class {class_name}(Script):
         })()
         center_widget = self._create_vector3_field_multi(centers, 'center', InspectorFieldType.VECTOR3, center_field_info, objects, type(comp).__name__)
         layout.addRow("Center", center_widget)
+        
+        # Collision mode - multi-selection
+        from engine3d.physics.types import CollisionMode
+        modes = []
+        for obj in objects:
+            for c in obj.components:
+                if type(c).__name__ == type(comp).__name__:
+                    modes.append(getattr(c, 'collision_mode', CollisionMode.NORMAL))
+                    break
+        mode_combo = QtWidgets.QComboBox()
+        for mode in CollisionMode:
+            mode_combo.addItem(mode.name, mode.value)
+        # Check if all modes are the same
+        mode_values = [m.value if isinstance(m, CollisionMode) else int(m) for m in modes]
+        if len(set(mode_values)) == 1 and mode_values:
+            mode_combo.setCurrentIndex(mode_values[0])
+        else:
+            mode_combo.setCurrentText("-")
+        mode_combo.currentIndexChanged.connect(lambda idx, fn='collision_mode', ft=InspectorFieldType.INT:
+            self._on_multi_field_changed(fn, ft, mode_combo.currentData()))
+        layout.addRow("Collision Mode", mode_combo)
+        box._collision_mode_combo = mode_combo
         
         # Box collider: size
         if is_box:
@@ -8129,6 +8163,21 @@ class {class_name}(Script):
         layout.addRow("Center", center_row)
         box._center_row = center_row
         
+        # Collision mode dropdown
+        from engine3d.physics.types import CollisionMode
+        mode_combo = QtWidgets.QComboBox()
+        for mode in CollisionMode:
+            mode_combo.addItem(mode.name, mode.value)
+        # Set current value
+        current_mode = getattr(collider, 'collision_mode', CollisionMode.NORMAL)
+        if isinstance(current_mode, CollisionMode):
+            mode_combo.setCurrentIndex(current_mode.value)
+        else:
+            mode_combo.setCurrentIndex(int(current_mode))
+        mode_combo.currentIndexChanged.connect(lambda idx, c=collider, cb=mode_combo: self._on_collider_mode_changed(c, cb))
+        layout.addRow("Collision Mode", mode_combo)
+        box._collision_mode_combo = mode_combo
+        
         main_layout.addLayout(layout)
         
         # Store the form layout for subclasses to add more fields
@@ -8234,6 +8283,13 @@ class {class_name}(Script):
             self._apply_spinbox(box._radius_field, float(collider.radius))
         if hasattr(box, "_height_field") and hasattr(collider, "height"):
             self._apply_spinbox(box._height_field, float(collider.height))
+        if hasattr(box, "_collision_mode_combo") and hasattr(collider, "collision_mode"):
+            from engine3d.physics.types import CollisionMode
+            mode = collider.collision_mode
+            if isinstance(mode, CollisionMode):
+                box._collision_mode_combo.setCurrentIndex(mode.value)
+            else:
+                box._collision_mode_combo.setCurrentIndex(int(mode))
 
     def _refresh_vector_row(self, row_widget: QtWidgets.QWidget, values: Iterable[float]) -> None:
         fields = getattr(row_widget, "_vector_fields", [])
@@ -8293,4 +8349,15 @@ class {class_name}(Script):
     def _on_capsule_collider_height_changed(self, collider: 'CapsuleCollider', value: float) -> None:
         collider.height = float(value)
         collider._transform_dirty = True
+        self._viewport.update()
+
+    def _on_collider_mode_changed(self, collider, combo: QtWidgets.QComboBox) -> None:
+        """Handle collision mode dropdown change."""
+        from engine3d.physics.types import CollisionMode
+        mode_value = combo.currentData()
+        # Convert int value to CollisionMode enum
+        if isinstance(mode_value, int):
+            collider.collision_mode = CollisionMode(mode_value)
+        else:
+            collider.collision_mode = mode_value
         self._viewport.update()

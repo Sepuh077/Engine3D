@@ -1947,8 +1947,8 @@ class Window3D:
             draw_objects(transparent_objects)
             self._ctx.depth_mask = True  # Restore for next frame
         
-        # Draw viewport border for non-fullscreen cameras
-        if not self._is_fullscreen_viewport(camera.viewport):
+        # Draw viewport border for non-fullscreen cameras (editor mode only)
+        if self.show_editor_overlays and not self._is_fullscreen_viewport(camera.viewport):
             self._draw_viewport_border(vp_x, vp_y, vp_w, vp_h)
     
     def _apply_clear_flags(self, camera: Camera3D, vp_x: int, vp_y: int, vp_w: int, vp_h: int):
@@ -1956,6 +1956,9 @@ class Window3D:
         from engine3d.engine3d.camera import ClearFlags
         
         flags = camera.clear_flags
+        # Handle case where clear_flags might be an int (from editor combo box)
+        if isinstance(flags, int):
+            flags = ClearFlags(flags)
         is_fullscreen = self._is_fullscreen_viewport(camera.viewport)
         
         # Get background color

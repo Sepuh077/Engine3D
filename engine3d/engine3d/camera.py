@@ -126,12 +126,98 @@ class Camera3D(Component):
                 Set this to show a skybox behind the scene.
     """
     
-    # Skybox material as InspectorField for editor support
-    # Note: Material type is handled specially in InspectorField via name check
+    # Inspector fields for editor support
     skybox = InspectorField(
         "SkyboxMaterial",  # String type name - resolved by editor
         default=None,
         tooltip="Skybox material for environment background (equirectangular or cubemap)"
+    )
+    fov = InspectorField(
+        float,
+        default=60.0,
+        min_value=1.0,
+        max_value=180.0,
+        step=1.0,
+        decimals=1,
+        tooltip="Field of view in degrees"
+    )
+    near = InspectorField(
+        float,
+        default=0.1,
+        min_value=0.001,
+        max_value=100.0,
+        step=0.01,
+        decimals=3,
+        tooltip="Near clipping plane distance"
+    )
+    far = InspectorField(
+        float,
+        default=1000.0,
+        min_value=1.0,
+        max_value=100000.0,
+        step=10.0,
+        decimals=1,
+        tooltip="Far clipping plane distance"
+    )
+    priority = InspectorField(
+        int,
+        default=0,
+        min_value=0,
+        max_value=1000,
+        tooltip="Render priority (lower = rendered first)"
+    )
+    # Note: is_main is a property (see below) - not an InspectorField to avoid conflict
+    clear_flags = InspectorField(
+        ClearFlags,
+        default=ClearFlags.SKYBOX_CLEAR,
+        tooltip="What to clear before rendering"
+    )
+    background_color = InspectorField(
+        Color,
+        default=(0.1, 0.1, 0.15),
+        tooltip="Background color when clear_flags includes COLOR"
+    )
+    render_mask = InspectorField(
+        RenderLayer,
+        default=RenderLayer.ALL,
+        tooltip="Which render layers this camera sees"
+    )
+    # Viewport fields (Viewport dataclass exposed as individual fields)
+    viewport_x = InspectorField(
+        float,
+        default=0.0,
+        min_value=0.0,
+        max_value=1.0,
+        step=0.01,
+        decimals=3,
+        tooltip="Viewport X position (0-1, normalized)"
+    )
+    viewport_y = InspectorField(
+        float,
+        default=0.0,
+        min_value=0.0,
+        max_value=1.0,
+        step=0.01,
+        decimals=3,
+        tooltip="Viewport Y position (0-1, normalized)"
+    )
+    viewport_width = InspectorField(
+        float,
+        default=1.0,
+        min_value=0.0,
+        max_value=1.0,
+        step=0.01,
+        decimals=3,
+        tooltip="Viewport width (0-1, normalized)"
+    )
+    viewport_height = InspectorField(
+        float,
+        default=1.0,
+        min_value=0.0,
+        max_value=1.0,
+        step=0.01,
+        decimals=3,
+        tooltip="Viewport height (0-1, normalized)"
     )
     
     def __init__(self, 
@@ -157,18 +243,25 @@ class Camera3D(Component):
             background_color: Background color when clear_flags includes COLOR
         """
         super().__init__()
+        # InspectorField descriptors handle storage with defaults
         self.fov = fov
         self.near = near
         self.far = far
-        # skybox is handled by InspectorField descriptor
+        self.priority = priority
+        self.clear_flags = clear_flags  # None -> descriptor default
+        self.background_color = background_color  # None -> descriptor default
+        self.render_mask = RenderLayer.ALL  # Fixed default, not a constructor param
         
         # Multi-camera support
-        self.viewport = viewport if viewport is not None else Viewport.full_screen()
-        self.priority = priority
+        vp = viewport if viewport is not None else Viewport.full_screen()
+        self._viewport = vp
+        # Sync viewport fields from dataclass (via InspectorField descriptors)
+        self.viewport_x = vp.x
+        self.viewport_y = vp.y
+        self.viewport_width = vp.width
+        self.viewport_height = vp.height
+        
         self._is_main = is_main
-        self.clear_flags = clear_flags if clear_flags is not None else ClearFlags.SKYBOX_CLEAR
-        self.background_color = background_color if background_color is not None else (0.1, 0.1, 0.15)
-        self.render_mask = RenderLayer.ALL
         
         # Frustum cache
         self._frustum_cache = {
@@ -178,6 +271,24 @@ class Camera3D(Component):
             "tan_y": None,
         }
         self._target_cache = Vector3.zero()
+    
+    def __setattr__(self, name: str, value):
+        """Override to sync viewport fields with viewport dataclass."""
+        # Handle viewport_* fields syncing to viewport dataclass
+        if name in ('viewport_x', 'viewport_y', 'viewport_width', 'viewport_height'):
+            super().__setattr__(name, value)
+            # Sync to _viewport if it exists
+            if hasattr(self, '_viewport') and isinstance(self._viewport, Viewport):
+                if name == 'viewport_x':
+                    self._viewport.x = value
+                elif name == 'viewport_y':
+                    self._viewport.y = value
+                elif name == 'viewport_width':
+                    self._viewport.width = value
+                elif name == 'viewport_height':
+                    self._viewport.height = value
+            return
+        super().__setattr__(name, value)
     
     @property
     def is_main(self) -> bool:
@@ -193,18 +304,42 @@ class Camera3D(Component):
     def set_full_screen(self):
         """Set viewport to full screen."""
         self.viewport = Viewport.full_screen()
+        self._sync_viewport_fields()
     
     def set_minimap(self, corner: str = 'top-right', size: float = 0.25):
         """Set viewport as a minimap in a corner."""
         self.viewport = Viewport.minimap(corner, size)
+        self._sync_viewport_fields()
         self.priority = 100  # Render on top
         self.clear_flags = ClearFlags.SOLID_CLEAR
     
     def set_mirror(self, position: str = 'top', width: float = 0.3, height: float = 0.15):
         """Set viewport as a rear-view mirror."""
         self.viewport = Viewport.mirror(position, width, height)
+        self._sync_viewport_fields()
         self.priority = 50  # Render after main but before UI
         self.clear_flags = ClearFlags.SOLID_CLEAR
+    
+    def _sync_viewport_fields(self):
+        """Sync viewport_* InspectorFields from viewport dataclass."""
+        if hasattr(self, 'viewport') and isinstance(self.viewport, Viewport):
+            self.viewport_x = self.viewport.x
+            self.viewport_y = self.viewport.y
+            self.viewport_width = self.viewport.width
+            self.viewport_height = self.viewport.height
+
+    @property
+    def viewport(self) -> Viewport:
+        """Get the viewport dataclass."""
+        if not hasattr(self, '_viewport'):
+            self._viewport = Viewport.full_screen()
+        return self._viewport
+    
+    @viewport.setter
+    def viewport(self, value: Viewport):
+        """Set viewport and sync fields."""
+        self._viewport = value
+        self._sync_viewport_fields()
 
     @property
     def position(self) -> Vector3:

@@ -14,6 +14,11 @@ class Collider(Component):
     
     # Inspector fields
     center = InspectorField(Vector3, default=(0.0, 0.0, 0.0), tooltip="Center offset of the collider")
+    collision_mode = InspectorField(
+        CollisionMode,
+        default=CollisionMode.NORMAL,
+        tooltip="Collision mode: NORMAL=detect+block, CONTINUOUS=sweep, IGNORE=no detection, TRIGGER=detect but pass"
+    )
 
     def __init__(self):
         super().__init__()
