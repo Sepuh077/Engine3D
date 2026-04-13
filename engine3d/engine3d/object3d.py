@@ -20,6 +20,8 @@ class Object3D(Component):
         self,
         filename: Optional[str] = None,
         color: Optional[ColorType] = None,
+        cast_shadows: bool = True,
+        receive_shadows: bool = True,
     ):
         super().__init__()
         # ---------------- Geometry ----------------
@@ -50,6 +52,10 @@ class Object3D(Component):
         self._color = c
         self._visible = True
         self.material: Material = LitMaterial(color=c)
+        
+        # Shadow properties
+        self.cast_shadows = cast_shadows
+        self.receive_shadows = receive_shadows
 
         # GPU handles (initialized later)
         self._vbo = None

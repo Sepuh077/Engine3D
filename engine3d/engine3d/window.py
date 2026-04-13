@@ -49,6 +49,7 @@ class MeshGPU:
     instance_vbo: Optional['moderngl.Buffer'] = None
     instance_capacity: int = 0
     instanced_vao: Optional['moderngl.VertexArray'] = None
+    shadow_vao: Optional['moderngl.VertexArray'] = None  # VAO for shadow pass
 
 
 @dataclass
@@ -94,11 +95,14 @@ class Window3D:
     
     uniform mat4 mvp;
     uniform mat4 model;
+    uniform mat4 light_space_matrix;
+    uniform bool shadows_enabled;
     
     out vec3 frag_normal;
     out vec3 frag_position;
     out vec4 frag_v_color;
     out vec2 frag_uv;
+    out vec4 frag_light_space_pos;
     
     void main() {
         gl_Position = mvp * vec4(in_position, 1.0);
@@ -106,6 +110,11 @@ class Window3D:
         frag_position = vec3(model * vec4(in_position, 1.0));
         frag_v_color = in_color;
         frag_uv = in_uv;
+        if (shadows_enabled) {
+            frag_light_space_pos = light_space_matrix * vec4(frag_position, 1.0);
+        } else {
+            frag_light_space_pos = vec4(0.0);
+        }
     }
     '''
 
@@ -123,11 +132,14 @@ class Window3D:
 
     uniform mat4 view;
     uniform mat4 projection;
+    uniform mat4 light_space_matrix;
+    uniform bool shadows_enabled;
 
     out vec3 frag_normal;
     out vec3 frag_position;
     out vec4 frag_v_color;
     out vec2 frag_uv;
+    out vec4 frag_light_space_pos;
 
     void main() {
         mat4 model = mat4(in_model_0, in_model_1, in_model_2, in_model_3);
@@ -136,6 +148,11 @@ class Window3D:
         frag_position = vec3(model * vec4(in_position, 1.0));
         frag_v_color = in_color;
         frag_uv = in_uv;
+        if (shadows_enabled) {
+            frag_light_space_pos = light_space_matrix * vec4(frag_position, 1.0);
+        } else {
+            frag_light_space_pos = vec4(0.0);
+        }
     }
     '''
     
@@ -146,6 +163,7 @@ class Window3D:
     in vec3 frag_position;
     in vec4 frag_v_color;
     in vec2 frag_uv;
+    in vec4 frag_light_space_pos;
     
     uniform vec3 light_dir;
     uniform vec3 light_color;
@@ -169,7 +187,43 @@ class Window3D:
     uniform float emissive_intensity;
     uniform vec3 view_pos;
     
+    // Shadow properties
+    uniform sampler2DShadow shadow_map;
+    uniform bool shadows_enabled;
+    uniform float shadow_bias;
+    
     out vec4 frag_color;
+    
+    float calculate_shadow(vec4 light_space_pos) {
+        // Perspective divide (not needed for orthographic, but keeps it general)
+        vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
+        // Transform to [0,1] range
+        proj_coords = proj_coords * 0.5 + 0.5;
+        
+        // Get current depth
+        float current_depth = proj_coords.z;
+        
+        // Outside shadow map bounds - no shadow
+        if (proj_coords.x < 0.0 || proj_coords.x > 1.0 ||
+            proj_coords.y < 0.0 || proj_coords.y > 1.0 ||
+            current_depth > 1.0) {
+            return 0.0;
+        }
+        
+        // PCF (Percentage Closer Filtering) for softer shadows
+        float shadow = 0.0;
+        vec2 texel_size = 1.0 / vec2(textureSize(shadow_map, 0));
+        for (int x = -1; x <= 1; ++x) {
+            for (int y = -1; y <= 1; ++y) {
+                vec2 sample_coords = proj_coords.xy + vec2(x, y) * texel_size;
+                float pcf_depth = texture(shadow_map, vec3(sample_coords, current_depth - shadow_bias));
+                shadow += pcf_depth;
+            }
+        }
+        shadow /= 9.0;
+        
+        return 1.0 - shadow;  // Invert: 1.0 = in shadow, 0.0 = lit
+    }
     
     void main() {
         vec3 normal = normalize(frag_normal);
@@ -192,19 +246,27 @@ class Window3D:
             result_color = albedo.rgb * emissive_intensity;
         }
         else { // Lit or Specular
+            // Calculate shadow factor
+            float shadow = 0.0;
+            if (shadows_enabled) {
+                shadow = calculate_shadow(frag_light_space_pos);
+            }
+            
             // Directional light
             vec3 dir_light_dir = normalize(-light_dir);
             float dir_diffuse = max(dot(normal, dir_light_dir), 0.0);
-            vec3 diffuse_light = light_color * (ambient + dir_diffuse * (1.0 - ambient));
+            // Apply shadow to directional light only (reduce diffuse by shadow amount)
+            vec3 diffuse_light = light_color * (ambient + dir_diffuse * (1.0 - ambient) * (1.0 - shadow));
             
             vec3 specular_light = vec3(0.0);
             if (material_type == 2) { // Specular
                 vec3 reflect_dir = reflect(-dir_light_dir, normal);
                 float spec = pow(max(dot(view_dir, reflect_dir), 0.0), shininess);
-                specular_light += light_color * spec * specular_color;
+                // Reduce specular in shadow
+                specular_light += light_color * spec * specular_color * (1.0 - shadow);
             }
 
-            // Point lights
+            // Point lights (not affected by shadow map for now)
             for (int i = 0; i < num_point_lights; ++i) {
                 vec3 light_vec = point_light_positions[i] - frag_position;
                 float distance = length(light_vec);
@@ -273,6 +335,43 @@ class Window3D:
     out vec4 frag_color;
     void main() {
         frag_color = texture(tex, frag_tex);
+    }
+    '''
+
+    # Shadow pass shaders (depth-only rendering from light's perspective)
+    SHADOW_VERTEX_SHADER = '''
+    #version 330 core
+    in vec3 in_position;
+    
+    uniform mat4 light_space_matrix;
+    uniform mat4 model;
+    
+    void main() {
+        gl_Position = light_space_matrix * model * vec4(in_position, 1.0);
+    }
+    '''
+
+    SHADOW_VERTEX_SHADER_INSTANCED = '''
+    #version 330 core
+    in vec3 in_position;
+    in vec4 in_model_0;
+    in vec4 in_model_1;
+    in vec4 in_model_2;
+    in vec4 in_model_3;
+    
+    uniform mat4 light_space_matrix;
+    
+    void main() {
+        mat4 model = mat4(in_model_0, in_model_1, in_model_2, in_model_3);
+        gl_Position = light_space_matrix * model * vec4(in_position, 1.0);
+    }
+    '''
+
+    SHADOW_FRAGMENT_SHADER = '''
+    #version 330 core
+    // Empty fragment shader - we only need depth
+    void main() {
+        // Depth is automatically written
     }
     '''
 
@@ -359,6 +458,16 @@ class Window3D:
             fragment_shader=self.OVERLAY_FRAGMENT_SHADER,
         )
 
+        # Shadow pass program for shadow mapping
+        self._shadow_program = self._ctx.program(
+            vertex_shader=self.SHADOW_VERTEX_SHADER,
+            fragment_shader=self.SHADOW_FRAGMENT_SHADER,
+        )
+        self._shadow_program_instanced = self._ctx.program(
+            vertex_shader=self.SHADOW_VERTEX_SHADER_INSTANCED,
+            fragment_shader=self.SHADOW_FRAGMENT_SHADER,
+        )
+
         # GPU caches/batches
         self._mesh_cache = {}
         self._static_batches: List[StaticBatch] = []
@@ -372,6 +481,13 @@ class Window3D:
         self.enable_culling = True
         self.culling_auto = True
         self.culling_auto_min_objects = 64
+        
+        # Shadow system
+        self.shadows_enabled = True  # Global shadow toggle
+        self._shadow_map = None  # ShadowMap instance (created when needed)
+        self._shadow_map_resolution = 1024  # Default resolution
+        self._light_space_matrix = np.eye(4, dtype=np.float32)  # Cached light space matrix
+        self._dummy_shadow_texture = None  # Dummy texture for when shadows are disabled
 
         # Simple uniform state cache
         self._last_base_color = None
@@ -830,6 +946,8 @@ class Window3D:
         mesh.ref_count -= 1
 
         if mesh.ref_count <= 0:
+            if mesh.shadow_vao:
+                mesh.shadow_vao.release()
             if mesh.instanced_vao:
                 mesh.instanced_vao.release()
             if mesh.instance_vbo:
@@ -1649,6 +1767,150 @@ class Window3D:
             vao.render(moderngl.LINES)
 
     # =========================================================================
+    # Shadow Rendering
+    # =========================================================================
+    
+    def _ensure_shadow_map(self, resolution: int = 1024):
+        """Create or resize the shadow map if needed."""
+        from engine3d.engine3d.graphics.shadow import ShadowMap
+        
+        if self._shadow_map is None or self._shadow_map_resolution != resolution:
+            if self._shadow_map is not None:
+                self._shadow_map.release()
+            self._shadow_map = ShadowMap(self._ctx, resolution)
+            self._shadow_map_resolution = resolution
+    
+    def _get_dummy_shadow_texture(self):
+        """Get or create a dummy shadow texture that always returns 'not in shadow'."""
+        if self._dummy_shadow_texture is None:
+            # Create a small depth texture filled with 1.0 (far plane = not in shadow)
+            self._dummy_shadow_texture = self._ctx.depth_texture((16, 16))
+            # Clear it to 1.0
+            fb = self._ctx.framebuffer(depth_attachment=self._dummy_shadow_texture)
+            fb.use()
+            self._ctx.clear(depth=1.0)
+            # Set comparison function for shadow sampling
+            self._dummy_shadow_texture.compare_func = '<='
+        return self._dummy_shadow_texture
+    
+    def _calculate_light_space_matrix(self, light: 'DirectionalLight3D', camera: Camera3D) -> np.ndarray:
+        """
+        Calculate the light space matrix for shadow rendering.
+        
+        This creates an orthographic projection from the light's perspective
+        that encompasses the visible area from the camera.
+        """
+        # Get light direction (normalized, pointing FROM light)
+        light_dir = np.array(light.direction, dtype=np.float32)
+        light_dir = light_dir / (np.linalg.norm(light_dir) + 1e-6)
+        
+        # Get camera position and forward direction
+        cam_pos = np.array(camera.position, dtype=np.float32)
+        cam_forward = np.array(camera.forward, dtype=np.float32)
+        
+        # Calculate scene center (in front of camera)
+        shadow_dist = light.shadow_distance
+        scene_center = cam_pos - cam_forward * (shadow_dist * 0.5)
+        
+        # Position the light above the scene
+        light_pos = scene_center - light_dir * shadow_dist
+        
+        # Calculate view matrix
+        world_up = np.array([0.0, 1.0, 0.0])
+        if abs(np.dot(light_dir, world_up)) > 0.99:
+            world_up = np.array([1.0, 0.0, 0.0])
+        
+        forward = -light_dir
+        right = np.cross(forward, world_up)
+        right = right / (np.linalg.norm(right) + 1e-6)
+        up = np.cross(right, forward)
+        
+        view = np.eye(4, dtype=np.float32)
+        view[0, :3] = right
+        view[1, :3] = up
+        view[2, :3] = forward
+        view[0, 3] = -np.dot(right, light_pos)
+        view[1, 3] = -np.dot(up, light_pos)
+        view[2, 3] = -np.dot(forward, light_pos)
+        
+        # Orthographic projection
+        ortho_size = shadow_dist * 0.7  # Adjust to encompass visible area
+        near = 0.1
+        far = shadow_dist * 2.0
+        
+        proj = np.array([
+            [1.0 / ortho_size, 0, 0, 0],
+            [0, 1.0 / ortho_size, 0, 0],
+            [0, 0, -2.0 / (far - near), -(far + near) / (far - near)],
+            [0, 0, 0, 1]
+        ], dtype=np.float32)
+        
+        return proj @ view
+    
+    def _render_shadow_pass(self, light: 'DirectionalLight3D', camera: Camera3D, objects: List[GameObject]):
+        """
+        Render the scene from the light's perspective to the shadow map.
+        
+        Args:
+            light: The directional light casting shadows
+            camera: The main camera (used to determine shadow volume)
+            objects: List of objects to potentially render
+        """
+        from engine3d.engine3d.graphics.shadow import ShadowMap
+        
+        # Ensure shadow map exists with correct resolution
+        self._ensure_shadow_map(light.shadow_resolution)
+        
+        # Calculate light space matrix
+        self._light_space_matrix = self._calculate_light_space_matrix(light, camera)
+        
+        # Begin shadow pass
+        self._shadow_map.begin()
+        
+        # Set light space matrix uniform
+        self._shadow_program['light_space_matrix'].write(
+            self._light_space_matrix.astype(np.float32).tobytes()
+        )
+        
+        # Render all shadow casters
+        for obj in objects:
+            obj3d = obj.get_component(Object3D)
+            if not obj3d or not obj3d._visible:
+                continue
+            # Check cast_shadows attribute (use getattr for safety)
+            if not getattr(obj3d, 'cast_shadows', True):
+                continue
+            
+            # Ensure mesh is loaded
+            self._ensure_mesh(obj3d)
+            
+            model = obj.transform.get_model_matrix()
+            self._shadow_program['model'].write(model.astype(np.float32).tobytes())
+            
+            mesh = obj3d._mesh
+            if mesh is not None:
+                # Create shadow VAO if needed (uses same VBO but only binds position)
+                # The shadow shader only uses in_position, so we skip normal/color/uv
+                # Vertex format: pos(3f) + normal(3f) + color(4f) + uv(2f) = 12 floats = 48 bytes
+                # We read 3 floats (12 bytes) for position, skip 36 bytes
+                if mesh.shadow_vao is None:
+                    mesh.shadow_vao = self._ctx.vertex_array(
+                        self._shadow_program,
+                        [(mesh.vbo, '3f 36x', 'in_position')]
+                    )
+                mesh.shadow_vao.render(moderngl.TRIANGLES, vertices=mesh.vertex_count)
+            elif obj3d._vao is not None:
+                # For objects without mesh caching, create a temporary shadow VAO
+                shadow_vao = self._ctx.vertex_array(
+                    self._shadow_program,
+                    [(obj3d._vbo, '3f 36x', 'in_position')]
+                )
+                shadow_vao.render(moderngl.TRIANGLES)
+        
+        # End shadow pass
+        self._shadow_map.end()
+
+    # =========================================================================
     # Rendering
     # =========================================================================
     
@@ -1675,6 +1937,28 @@ class Window3D:
             else:
                 self._ctx.clear(0.1, 0.1, 0.15)
             return
+
+        # Get scene objects and light
+        if self._current_scene:
+            light = self._current_scene.light
+            objects = self._current_scene.objects
+        else:
+            light = self.light
+            objects = self.objects
+        
+        # ------------------------------------------------------------
+        # Shadow Pass (render before main pass)
+        # ------------------------------------------------------------
+        shadows_active = (
+            self.shadows_enabled and 
+            light is not None and 
+            light.cast_shadows and
+            isinstance(light, DirectionalLight3D)
+        )
+        
+        if shadows_active:
+            main_camera = cameras_to_render[0]  # Use first camera for shadow volume
+            self._render_shadow_pass(light, main_camera, objects)
 
         # Render each camera in priority order
         for camera in cameras_to_render:
@@ -1766,6 +2050,15 @@ class Window3D:
             light = self.light
             objects = self.objects
         
+        # Determine if shadows are active for this camera
+        shadows_active = (
+            self.shadows_enabled and 
+            light is not None and 
+            light.cast_shadows and
+            isinstance(light, DirectionalLight3D) and
+            self._shadow_map is not None
+        )
+        
         # Calculate aspect ratio for this viewport
         viewport_aspect = vp_w / vp_h if vp_h > 0 else self.aspect
         
@@ -1831,6 +2124,31 @@ class Window3D:
                         program['point_light_intensities'].write(np.array(int_vals, dtype='f4').tobytes())
                     if 'point_light_ranges' in program:
                         program['point_light_ranges'].write(np.array(range_vals, dtype='f4').tobytes())
+            
+            # Shadow uniforms - always set these to avoid undefined values
+            if 'shadows_enabled' in program:
+                program['shadows_enabled'].value = shadows_active
+            
+            if 'light_space_matrix' in program:
+                program['light_space_matrix'].write(
+                    self._light_space_matrix.astype(np.float32).tobytes()
+                )
+            
+            if 'shadow_bias' in program:
+                program['shadow_bias'].value = light.shadow_bias if light else 0.001
+
+        # Bind shadow map texture
+        if shadows_active and self._shadow_map is not None:
+            self._shadow_map.use(location=1)  # Use texture unit 1
+            self._program['shadow_map'].value = 1
+            self._instanced_program['shadow_map'].value = 1
+        else:
+            # When shadows are disabled, bind a dummy depth texture
+            # that always returns "not in shadow"
+            dummy = self._get_dummy_shadow_texture()
+            dummy.use(location=1)
+            self._program['shadow_map'].value = 1
+            self._instanced_program['shadow_map'].value = 1
 
         # ------------------------------------------------------------
         # Visibility + culling + Sorting
