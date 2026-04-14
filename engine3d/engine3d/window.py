@@ -1817,10 +1817,12 @@ class Window3D:
         # Position the light above the scene
         light_pos = scene_center - light_dir * shadow_dist
         
-        # Calculate view matrix
+        # Calculate view matrix (choose up not collinear with light dir)
         world_up = np.array([0.0, 1.0, 0.0])
-        if abs(np.dot(light_dir, world_up)) > 0.99:
+        if abs(light_dir[1]) > abs(light_dir[0]) and abs(light_dir[1]) > abs(light_dir[2]):
             world_up = np.array([1.0, 0.0, 0.0])
+        elif abs(light_dir[0]) > abs(light_dir[2]):
+            world_up = np.array([0.0, 0.0, 1.0])
         
         forward = -light_dir
         right = np.cross(forward, world_up)
@@ -1847,7 +1849,7 @@ class Window3D:
             [0, 0, 0, 1]
         ], dtype=np.float32)
         
-        return proj @ view
+        return (proj @ view).T
     
     def _render_shadow_pass(self, light: 'DirectionalLight3D', camera: Camera3D, objects: List[GameObject]):
         """

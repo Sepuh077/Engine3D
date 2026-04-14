@@ -128,10 +128,12 @@ def calculate_light_space_matrix(
     light_pos = scene_center - light_dir * shadow_distance
     
     # Calculate view matrix (look at scene center from light position)
-    # Up vector: try to use world up, but use another axis if light points straight up/down
+    # Choose up vector not collinear with light dir (handles vertical/horizontal)
     world_up = np.array([0.0, 1.0, 0.0])
-    if abs(np.dot(light_dir, world_up)) > 0.99:
+    if abs(light_dir[1]) > abs(light_dir[0]) and abs(light_dir[1]) > abs(light_dir[2]):
         world_up = np.array([1.0, 0.0, 0.0])
+    elif abs(light_dir[0]) > abs(light_dir[2]):
+        world_up = np.array([0.0, 0.0, 1.0])
     
     # Calculate view matrix components
     forward = -light_dir  # Camera looks opposite to light direction
@@ -165,4 +167,4 @@ def calculate_light_space_matrix(
         [0, 0, 0, 1]
     ], dtype=np.float32)
     
-    return proj @ view
+    return (proj @ view).T
