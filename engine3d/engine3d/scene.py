@@ -12,6 +12,7 @@ from engine3d.engine3d.gameobject import GameObject
 from engine3d.engine3d.object3d import Object3D
 from engine3d.engine3d.camera import Camera3D
 from engine3d.engine3d.light import DirectionalLight3D, PointLight3D, Light3D
+from engine3d.engine3d.audio import AudioListener
 from engine3d.types import Color, ColorType
 from engine3d.engine3d.ui.manager import UIManager
 
@@ -55,6 +56,7 @@ class Scene3D:
         cam_obj = GameObject("Main Camera")
         camera = Camera3D(is_main=True)  # Mark as main camera
         cam_obj.add_component(camera)
+        cam_obj.add_component(AudioListener())
         cam_obj.transform.position = (0, 5, 10)
         cam_obj.transform.look_at((0, 0, 0))
         self.add_object(cam_obj)

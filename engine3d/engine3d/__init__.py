@@ -111,6 +111,9 @@ from engine3d.engine3d.drawing import (
 # Resources
 from engine3d.engine3d.resources import Resources
 
+# Audio
+from engine3d.engine3d.audio import AudioClip, AudioListener, AudioSource
+
 
 __all__ = [
     'Window3D',
@@ -186,6 +189,10 @@ __all__ = [
     'draw_image',
     # Resources
     'Resources',
+    # Audio
+    'AudioClip',
+    'AudioListener',
+    'AudioSource',
 ]
 
 __version__ = '0.1.0'
