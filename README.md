@@ -25,8 +25,11 @@ Engine3D is an open-source, beginner-friendly 3D game engine for Python inspired
 ## Installation
 
 ### Requirements
-- Python 3.8+
+- Python 3.8–3.12
 - A working OpenGL driver
+
+⚠️ Python 3.13+ is not supported yet.
+Some dependencies (notably pygame) fail to build due to changes in Python's packaging system (distutils removal).
 
 ### Install (editable, all extras)
 
